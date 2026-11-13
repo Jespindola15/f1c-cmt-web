@@ -7,7 +7,7 @@ const lines = []; const log = (s) => { lines.push(s); if (process.env.TRACE_FROM
 const emu = new Emulator({ log, host: { deferPresent: true, present() {}, setMode() {}, setTitle() {}, audio: { play() {}, stop() {}, update() {}, setVolume() {}, setPan() {}, setRate() {} } } });
 emu.traceApis = false; emu.logFiles = false; if (process.env.TRACE_FROM) { emu.traceFrom = Number(process.env.TRACE_FROM); emu.maxApiLog = 4000; } if (noJit) emu.useJit = false;
 emu.vfs = new DiskVFS(GAME); if (!process.env.OPH) { emu.vfs.index.delete('OPH.DLL'); emu.vfs.index.delete('VFXDRIVE.DLL'); }
-emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(process.env.HOME + '/f1c/overlay/config.ini')) });
+emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(new URL('./config/Config.ini', import.meta.url))) });
 emu.loadMain(new Uint8Array(fs.readFileSync(GAME + '/F1C_CMT.exe')), 'F1C_CMT.EXE');
 emu.f1cT0 = Date.now(); let res;
 while (emu.cpu.icount < max) { res = emu.run(20_000_000); if (res.status !== 'running') break; }
