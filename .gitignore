@@ -1,0 +1,3 @@
+node_modules/
+tests/simd/cases2.json
+tests/simd/cases*.json
