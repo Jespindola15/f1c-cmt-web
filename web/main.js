@@ -34,8 +34,8 @@ async function boot() {
 }
 function askImport(idx) {
   panel.show('Importar F1 Challenge CMT 2025', 'Elegí la carpeta de tu instalación ("F1 Challenge 2025 CMT"). Se copia una sola vez al almacenamiento privado de este navegador (unos 3,5 GB); tu instalación no se modifica y nada se sube a ningún servidor.');
-  if (window.showDirectoryPicker) panel.button('Elegir carpeta…', async () => { try { const h = await window.showDirectoryPicker({ id: 'f1c-cmt', mode: 'read' }); runImport({ handle: h }); } catch (e) { if (e.name !== 'AbortError') addLog(String(e)); } });
-  else { const inp = document.createElement('input'); inp.type = 'file'; inp.webkitdirectory = true; inp.onchange = () => runImport({ files: [...inp.files] }); panel.button('Elegir carpeta…', () => inp.click()); }
+  if (window.showDirectoryPicker && !params.has('picker')) panel.button('Elegir carpeta…', async () => { try { const h = await window.showDirectoryPicker({ id: 'f1c-cmt', mode: 'read' }); runImport({ handle: h }); } catch (e) { if (e.name !== 'AbortError') addLog(String(e)); } });
+  else { const inp = document.createElement('input'); inp.type = 'file'; inp.webkitdirectory = true; inp.id = 'dirinput'; inp.hidden = true; document.body.append(inp); inp.onchange = () => runImport({ files: [...inp.files] }); panel.button('Elegir carpeta…', () => inp.click()); }
   if (idx) panel.button('Jugar con la copia actual', () => startGame({ source: { kind: 'pack' } }), 'sec');
 }
 async function runImport(src) {

@@ -58,4 +58,4 @@ export class GameVFS {
   }
 }
 // Exclusiones al importar/indexar la instalación (no los usa el juego o no aplican en el navegador)
-export const SKIP_RE = /^(CMTSeasonData\.zip|Audio[\\/]Vehicle\.zip|CMTSeasonData[\\/]Circuits\.zip|SelectDirectXInstaller|Support|Src|Permissions|Telemetry|main\.dmp|.*\.(pdf|jar|url)$)/i;
+export const SKIP_RE = /^(CMTMovies|Plugins|CMTSeasonData\.zip|Audio[\\/]Vehicle\.zip|CMTSeasonData[\\/]Circuits\.zip|SelectDirectXInstaller|Support|Src|Permissions|Telemetry|main\.dmp|.*\.(pdf|jar|url)$)/i;

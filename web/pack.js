@@ -28,22 +28,32 @@ export function* walkFiles(fileList) {
 export async function importInto(items, onProgress) {
   const root = await opfsRoot();
   await root.removeEntry('index.json').catch(() => {});
-  const files = [], dirs = []; let pack = -1, h = null, off = 0, bytes = 0, n = 0;
-  const open = async () => { if (h) { h.flush(); h.close(); } pack++; off = 0; const fh = await root.getFileHandle(`pack-${String(pack).padStart(3, '0')}.bin`, { create: true }); h = await fh.createSyncAccessHandle(); h.truncate(0); };
-  await open();
+  // reanudación: si una importación anterior quedó a medias, se conservan los archivos ya copiados
+  let prev = null; try { prev = JSON.parse(await (await (await root.getFileHandle('index.partial.json')).getFile()).text()); } catch {}
+  const have = new Map(); if (prev) for (const f of prev.files) have.set(f[0], f);
+  const files = [], dirs = []; let pack = prev ? prev.pack - 1 : -1, h = null, off = 0, bytes = 0, n = 0, lastSave = 0;
+  const open = async (keep) => { if (h) { h.flush(); h.close(); } pack++; const fh = await root.getFileHandle(`pack-${String(pack).padStart(3, '0')}.bin`, { create: true }); h = await fh.createSyncAccessHandle(); if (keep) off = h.getSize(); else { h.truncate(0); off = 0; } };
+  await open(!!prev);
+  if (prev) off = Math.max(off, prev.off);
+  const checkpoint = async () => { const w = await (await root.getFileHandle('index.partial.json', { create: true })).createWritable(); await w.write(JSON.stringify({ files: files.concat([...have.values()].filter((f) => !files.some((g) => g[0] === f[0]))), pack, off })); await w.close(); };
   for await (const it of items) {
     if (it.dir) { dirs.push(it.dir); continue; }
-    const file = await it.get(); const buf = new Uint8Array(await file.arrayBuffer());
-    if (off + buf.length > PACK_MAX && off > 0) await open();
+    const old = have.get(it.path);
+    const file = await it.get();
+    if (old && old[1] === file.size) { files.push(old); have.delete(it.path); bytes += old[1]; n++; continue; }
+    const buf = new Uint8Array(await file.arrayBuffer());
+    if (off + buf.length > PACK_MAX && off > 0) await open(false);
     let w = 0; while (w < buf.length) w += h.write(buf.subarray(w), { at: off + w });
     files.push([it.path, buf.length, pack, off]); off += buf.length; bytes += buf.length; n++;
     if (n % 20 === 0) onProgress?.({ files: n, bytes, path: it.path });
+    if (n - lastSave >= 300) { lastSave = n; h.flush(); await checkpoint(); }
   }
   h.flush(); h.close();
   const exe = files.find((f) => f[0].toUpperCase() === 'F1C_CMT.EXE');
   if (!exe) throw new Error('La carpeta elegida no contiene F1C_CMT.exe (elegí la carpeta "F1 Challenge 2025 CMT").');
   const idx = { version: 1, created: new Date().toISOString(), packs: pack + 1, bytes, files, dirs };
   const ih = await (await root.getFileHandle('index.json', { create: true })).createWritable(); await ih.write(JSON.stringify(idx)); await ih.close();
+  await root.removeEntry('index.partial.json').catch(() => {});
   onProgress?.({ files: n, bytes, done: true });
   return idx;
 }
