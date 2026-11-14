@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 const require = createRequire((process.env.PW || process.env.HOME + '/pw') + '/package.json');
 const { chromium } = require('playwright');
-const [GAME, MODE = 'import', SECS = '160', OUT = 'tests/shots/dist.png'] = process.argv.slice(2); const PORT = 8800 + Math.floor(Math.random() * 100);
+const [GAME, MODE = 'import', SECS = '160', OUT = 'tests/shots/dist.png'] = process.argv.slice(2); const PORT = 8811; // origen fijo: OPFS es por origen
 const srv = spawn('node', [new URL('./static-server.mjs', import.meta.url).pathname, 'dist', String(PORT)], { stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise((r) => srv.stdout.once('data', r));
 const ctx = await chromium.launchPersistentContext(process.env.HOME + '/chrome-profile', { args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'], viewport: { width: 1100, height: 950 } });

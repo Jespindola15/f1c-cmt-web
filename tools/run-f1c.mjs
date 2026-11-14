@@ -16,13 +16,14 @@ else {
   emu = new Emulator({ log, host }); emu.vfs = makeVfs();
   emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(new URL('./config/Config.ini', import.meta.url))) });
 }
+if (E.REAL) { emu.clockMode = 'real'; }
 emu.traceApis = false; emu.logFiles = false; emu.instrPerMs = Number(E.MHZ || 1000) * 1000; emu.qpcTurboMs = Number(E.TURBO ?? 0.02);
 if (E.CPU === 'mmx') { emu.cpuFeatures = [2, 3, 8, 12]; emu.cpu.cpuidEdx = 0x1 | 0x10 | 0x20 | 0x100 | 0x8000 | (1 << 23); }
 if (E.TRACE_FROM) { emu.traceFrom = Number(E.TRACE_FROM); emu.maxApiLog = 4000; }
 if (noJit) emu.useJit = false;
 if (!E.LOAD) emu.loadMain(new Uint8Array(fs.readFileSync(GAME + '/F1C_CMT.exe')), 'F1C_CMT.EXE');
 const t0 = Date.now(), i0 = emu.cpu.icount; let res = { status: 'running' };
-emu.onPresent = (d) => { if (d.frame <= 30 || d.frame % 50 === 0) console.log(`[FRAME] ${d.frame} instr=${emu.cpu.icount} t=${((Date.now() - t0) / 1000).toFixed(1)}s draws=${emu.d3d.stats.draws} texturas=${emu.d3d.stats.textures}`); };
+emu.onPresent = (d) => { if (E.PACE) { const until = performance.now() + Number(E.PACE); while (performance.now() < until); } if (d.frame <= 30 || d.frame % 50 === 0) console.log(`[FRAME] ${d.frame} instr=${emu.cpu.icount} t=${((Date.now() - t0) / 1000).toFixed(1)}s draws=${emu.d3d.stats.draws} texturas=${emu.d3d.stats.textures}`); };
 const SW = Number(E.SWITCH_AT || 0); const DEADLINE = Date.now() + Number(E.SECS || 1e9) * 1000;
 while (emu.cpu.icount < max && Date.now() < DEADLINE) {
   if (SW && emu.useJit && emu.cpu.icount >= SW) { emu.useJit = false; console.log('[F1C] JIT desactivado en instr=' + emu.cpu.icount); }
