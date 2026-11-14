@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const GAME = path.resolve(process.argv[2] || '.'); const PORT = Number(process.argv[3] || 8150);
 const SNAP = process.argv[4] ? path.resolve(process.argv[4]) : null; // carpeta de instantáneas (opcional): /snap/<nombre>/state.bin|mem.bin
-const SKIP = /^(CMTSeasonData\.zip|Audio[\\/]Vehicle\.zip|CMTSeasonData[\\/]Circuits\.zip|SelectDirectXInstaller|Support|DrivingSchool|CMTLOG|Src|Permissions|Shaders|Telemetry)/i;
+import { SKIP_RE as SKIP } from '../src/vfs-core.js';
 function manifest() {
   const files = [], dirs = [];
   const walk = (d, rel) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const r = rel ? rel + '/' + e.name : e.name; if (SKIP.test(r)) continue;
@@ -21,6 +21,7 @@ http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
   const H = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cache-Control': 'no-store' };
   try {
+    if (url === '/config.json' && process.env.CONTENT) { res.writeHead(200, { ...H, 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ contentBase: '/game/' })); }
     if (url === '/game/manifest.json') { man ??= manifest(); res.writeHead(200, { ...H, 'Content-Type': 'application/json' }); return res.end(JSON.stringify(man)); }
     let file;
     if (url.startsWith('/cap/') && process.env.CAP) { const C = path.resolve(process.env.CAP); file = path.join(C, url.slice(5)); if (!file.startsWith(C)) throw new Error('ruta'); }

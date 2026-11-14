@@ -22,7 +22,11 @@ export const KERNEL32 = {
   PeekNamedPipe: api(6, () => 0), CreateProcessA: api(10, (emu, app, cmd) => { emu.log('F1C', `CreateProcessA("${app ? emu.mem.cstr(app) : ''}", "${cmd ? emu.mem.cstr(cmd) : ''}") -> rechazado`); return 0; }), DuplicateHandle: ok1(7),
   RaiseException: api(4, (emu, c) => { throw new HaltSignal(`RaiseException 0x${(c >>> 0).toString(16)}`); }),
   GetUserDefaultLCID: api(0, () => 0x409), EnumSystemLocalesA: ok1(2), IsValidCodePage: ok1(1), IsValidLocale: ok1(2),
-  SetFileAttributesA: ok1(2), CopyFileA: ok1(3), MoveFileA: ok1(2), CreateDirectoryA: ok1(2), RemoveDirectoryA: ok1(1),
+  SetFileAttributesA: ok1(2), RemoveDirectoryA: ok1(1),
+  CreateDirectoryA: api(2, (emu, p) => { emu.vfs.mkdir?.(emu.mem.cstr(p)); return 1; }),
+  CopyFileA: api(3, (emu, a, b, failIfExists) => { const src = emu.vfs.find(emu.mem.cstr(a)); if (!src) { emu.lastError = 2; return 0; } const dn = emu.mem.cstr(b);
+    if (failIfExists && emu.vfs.find(dn)) { emu.lastError = 80; return 0; } const d = emu.vfs.create(dn); d.data = src.data.slice(); emu.vfs.written?.(d); return 1; }),
+  MoveFileA: api(2, (emu, a, b) => { const an = emu.mem.cstr(a), src = emu.vfs.find(an); if (!src) { emu.lastError = 2; return 0; } const d = emu.vfs.create(emu.mem.cstr(b)); d.data = src.data; emu.vfs.written?.(d); emu.vfs.remove?.(an); return 1; }),
   QueueUserAPC: ok1(3), ResumeThread: ok1(1), SuspendThread: api(1, () => 0), SetThreadPriority: ok1(2), SleepEx: api(2, () => 0),
   CreateThread: api(6, (emu, sa, ss, start, param, fl, tid) => { emu.log('F1C', `CreateThread start=0x${start.toString(16)} (no ejecutado)`); if (tid) emu.mem.w32(tid, 0x777); return 0x7770; }),
   CompareFileTime: api(2, () => 0), GetPriorityClass: api(1, () => 0x20),

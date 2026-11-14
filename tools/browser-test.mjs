@@ -7,14 +7,14 @@ import { createRequire } from 'node:module';
 const require = createRequire((process.env.PW || process.env.HOME + '/pw') + '/package.json');
 const { chromium } = require('playwright');
 const [GAME, SNAP, SECS = '60', OUT = 'tests/shots/web.png'] = process.argv.slice(2); const PORT = 8150 + Math.floor(Math.random() * 500);
-const srv = spawn('node', [new URL('./dev-server.mjs', import.meta.url).pathname, GAME, String(PORT), SNAP], { stdio: ['ignore', 'pipe', 'inherit'] });
+const srv = spawn('node', [new URL('./dev-server.mjs', import.meta.url).pathname, GAME, String(PORT), SNAP], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
 await new Promise((r) => srv.stdout.once('data', r));
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--js-flags=--max-old-space-size=4096'] });
 const page = await browser.newPage({ viewport: { width: 1000, height: 860 } });
 page.on('console', (m) => console.log('[consola]', m.text()));
 page.on('pageerror', (e) => console.log('[error]', e.message));
 const t0 = Date.now(); const T = Number(SECS) * 1000;
-await page.goto(`http://localhost:${PORT}/?snap=${process.env.SNAPNAME || "menu"}${process.env.NODRAW ? '&nodraw=1' : ''}`);
+await page.goto(`http://localhost:${PORT}/${process.env.SNAPNAME ? '?snap=' + process.env.SNAPNAME : '?'}${process.env.NODRAW ? '&nodraw=1' : ''}`);
 let last = '';
 const shot = async (name) => { if (process.env.PROBE) { await page.evaluate(() => window.f1c.worker.postMessage({ type: 'probe' })); await page.waitForFunction(() => window.f1c.probe, null, { timeout: 30000 }).catch(() => {}); console.log('[probe]', (await page.evaluate(() => window.f1c.probe) || '').slice(0, 1500)); }
   const url = await page.evaluate(async () => { window.f1c.shot = null; window.f1c.worker.postMessage({ type: 'shot' }); for (let i = 0; i < 100 && !window.f1c.shot; i++) await new Promise((r) => setTimeout(r, 100));
@@ -22,7 +22,7 @@ const shot = async (name) => { if (process.env.PROBE) { await page.evaluate(() =
   if (url) { fs.writeFileSync(name.replace(/\.png$/, '-lienzo.png'), Buffer.from(url.split(',')[1], 'base64')); console.log('[captura lienzo]', name.replace(/\.png$/, '-lienzo.png')); } const s = await page.evaluate(() => window.f1c.lastStats); console.log(`[captura] ${name} t=${((Date.now() - t0) / 1000).toFixed(0)}s`, JSON.stringify(s)); await page.locator('#wrap').screenshot({ path: name }); };
 while (Date.now() - t0 < T) {
   await page.waitForTimeout(2000);
-  const st = await page.evaluate(() => ({ ready: window.f1c?.ready, halted: window.f1c?.halted, s: window.f1c?.lastStats, status: document.getElementById('status').textContent, logs: window.f1c?.logs.splice(0) || [] }));
+  const st = await page.evaluate(() => ({ ready: window.f1c?.ready, halted: window.f1c?.halted, s: window.f1c?.lastStats, status: document.getElementById('ptitle').textContent + ' | ' + document.getElementById('ptext').textContent, logs: window.f1c?.logs.splice(0) || [] }));
   for (const l of st.logs) console.log('[log]', l);
   const line = st.ready ? `${st.s ? st.s.mips.toFixed(1) + ' MIPS ' + st.s.fps.toFixed(1) + ' fps emu=' + (st.s.emuMs||0).toFixed(1) + 'ms gl=' + (st.s.glMs||0).toFixed(1) + 'ms draws=' + st.s.draws + ' instr=' + st.s.icount + ' omitidos=' + JSON.stringify(st.s.skipped) : 'sin stats'}` : st.status;
   if (line !== last) { console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}s] ${line}`); last = line; }

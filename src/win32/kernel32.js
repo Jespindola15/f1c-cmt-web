@@ -187,7 +187,8 @@ const K = {
     if (!f) {
       if (disp === 1 || disp === 2 || disp === 4) f = emu.vfs.create(name); // CREATE_NEW/ALWAYS, OPEN_ALWAYS
       else { emu.lastError = ERROR_FILE_NOT_FOUND; emu.log('FS', `CreateFileA("${name}") -> no encontrado en el VFS`); return INVALID_HANDLE; }
-    } else if (disp === 2 || disp === 5) f.data = new Uint8Array(0);
+    } else if (disp === 2 || disp === 5) { f.data = new Uint8Array(0); f.dirty = true; }
+    if (!f.written && (disp === 1 || disp === 2 || disp === 4) && !f.data.length) f.dirty = true;
     return emu.newHandle({ type: 'file', file: f, pos: 0, name });
   }),
   ReadFile: api(5, (emu, h, buf, n, pRead) => {
@@ -205,7 +206,7 @@ const K = {
     const o = fileHandle(emu, h); if (!o) return 0;
     const end = o.pos + n;
     if (end > o.file.data.length) { const d = new Uint8Array(end); d.set(o.file.data); o.file.data = d; }
-    o.file.data.set(emu.mem.u8.subarray(buf, buf + n), o.pos); o.pos = end;
+    o.file.data.set(emu.mem.u8.subarray(buf, buf + n), o.pos); o.pos = end; o.file.dirty = true;
     if (pW) emu.mem.w32(pW, n); return 1;
   }),
   SetFilePointer: api(4, (emu, h, dist, pHigh, method) => {
@@ -216,10 +217,10 @@ const K = {
     return o.pos;
   }),
   GetFileSize: api(2, (emu, h, pHigh) => { const o = fileHandle(emu, h); if (pHigh) emu.mem.w32(pHigh, 0); return o ? o.file.data.length : 0xffffffff; }),
-  SetEndOfFile: api(1, (emu, h) => { const o = fileHandle(emu, h); if (o) o.file.data = o.file.data.slice(0, o.pos); return 1; }),
+  SetEndOfFile: api(1, (emu, h) => { const o = fileHandle(emu, h); if (o) { o.file.data = o.file.data.slice(0, o.pos); o.file.dirty = true; } return 1; }),
   FlushFileBuffers: api(1, () => 1),
-  CloseHandle: api(1, (emu, h) => { emu.handles.delete(h); return 1; }),
-  DeleteFileA: api(1, (emu, p) => (emu.vfs.files.delete(emu.vfs.norm(emu.mem.cstr(p))) ? 1 : 0)),
+  CloseHandle: api(1, (emu, h) => { const o = emu.handles.get(h); if (o && o.type === 'file' && o.file.dirty) { o.file.dirty = false; emu.vfs.written?.(o.file); } emu.handles.delete(h); return 1; }),
+  DeleteFileA: api(1, (emu, p) => (emu.vfs.remove ? emu.vfs.remove(emu.mem.cstr(p)) : emu.vfs.files.delete(emu.vfs.norm(emu.mem.cstr(p)))) ? 1 : 0),
   GetFileAttributesA: api(1, (emu, p) => { const n = emu.mem.cstr(p); emu.note(`"${n}"`); return emu.vfs.find(n) ? 0x20 : 0xffffffff; }),
   FindFirstFileA: api(2, (emu, p, out) => {
     const pat = emu.mem.cstr(p); const list = emu.vfs.list(pat);

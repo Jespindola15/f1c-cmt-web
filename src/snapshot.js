@@ -16,7 +16,7 @@ export function take(emu, onChunk = null) {
   if (cur) { chunks[chunks.length - 1] = cur.subarray(0, o); if (onChunk) { onChunk(chunks[chunks.length - 1], chunks.length - 1); chunks[chunks.length - 1] = null; } }
   const mem = chunks.length === 1 ? chunks[0] : chunks;
   const emuFields = {}; for (const k of Object.keys(emu)) if (!SKIP.has(k) && typeof emu[k] !== 'function') emuFields[k] = emu[k];
-  const written = new Map(); for (const [k, v] of emu.vfs.files) if (!emu.vfs.opened.has(k)) written.set(k, v);
+  const written = new Map(); for (const [k, v] of emu.vfs.files) if (v.written || !emu.vfs.opened.has(k)) written.set(k, { name: v.name, data: v.data, written: true });
   const state = serialize({
     cpu: { r: [...c.r], eip: c.eip, eflags: c.eflags, fsBase: c.fsBase, icount: c.icount, cpuidEdx: c.cpuidEdx,
       fpu: { st: f.st, top: f.top, cw: f.cw, tagEmpty: f.tagEmpty, c0: f.c0, c1: f.c1, c2: f.c2, c3: f.c3 },
@@ -39,7 +39,7 @@ export function restore({ state, mem }, makeVfs, opts = {}) {
   c.r.set(st.cpu.r); c.eip = st.cpu.eip; c.eflags = st.cpu.eflags; c.fsBase = st.cpu.fsBase; c.icount = st.cpu.icount; if (st.cpu.cpuidEdx !== undefined) c.cpuidEdx = st.cpu.cpuidEdx;
   Object.assign(c.fpu, st.cpu.fpu); new Uint8Array(c.simd.xbuf).set(st.cpu.simd.x); new Uint8Array(c.simd.mbuf).set(st.cpu.simd.m); c.simd.mxcsr = st.cpu.simd.mxcsr;
   Object.assign(emu, st.emu);
-  emu.vfs = makeVfs(); emu.vfs.cwd = st.vfs.cwd; for (const [k, v] of st.vfs.written) emu.vfs.files.set(k, v);
+  emu.vfs = makeVfs(); emu.vfs.cwd = st.vfs.cwd; for (const [k, v] of st.vfs.written) { v.written = true; emu.vfs.files.set(k, v); }
   const com = new Map([...d3dTable(), ...diTable()]);
   emu.thunks = []; emu.thunkByName = new Map();
   for (const t of st.thunks) {
