@@ -1,0 +1,13 @@
+{
+  "name": "f1c-cmt-web",
+  "version": "0.3.0",
+  "private": true,
+  "description": "F1 Challenge CMT 2025 en el navegador: el F1C_CMT.exe original sobre un emulador x86 + Win32 + Direct3D 8 → WebGL2. No incluye archivos del juego.",
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build-web.mjs",
+    "serve": "node tools/static-server.mjs dist 8800",
+    "dev": "node tools/dev-server.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

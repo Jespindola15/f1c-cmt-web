@@ -1,0 +1,23 @@
+# Netlify: compila el sitio estático (sin dependencias) y publica dist/.
+# El sitio NO contiene archivos de EA ni de CMT: cada jugador importa su propia instalación desde el navegador.
+[build]
+  command = "node tools/build-web.mjs"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Aislamiento entre orígenes (necesario para WebAssembly/SharedArrayBuffer) en todo el sitio
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+    Cross-Origin-Resource-Policy = "same-origin"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "text/javascript; charset=utf-8"
+    Cache-Control = "public, max-age=0, must-revalidate"
