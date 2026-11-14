@@ -28,6 +28,8 @@ export class Memory {
     this.buf = new ArrayBuffer(size);
     this.u8 = new Uint8Array(this.buf);
     this.dv = new DataView(this.buf);
+    // vistas alineadas para las rutas rápidas (host little-endian, como x86)
+    this.u16 = new Uint16Array(this.buf); this.u32 = new Uint32Array(this.buf); this.f32a = new Float32Array(this.buf); this.f64a = new Float64Array(this.buf);
     this.size = size;
     this.heapPtr = HEAP_BASE;
     this.blocks = new Map(); // addr -> size (para HeapSize/ReAlloc)
@@ -35,15 +37,18 @@ export class Memory {
     // vigilancia de escrituras en un rango (la usa el reescalado 3D para saber quién pintó cada píxel)
     this.watchLo = 0; this.watchHi = 0; this.onWatch = null;
   }
+  // escritura sin efectos secundarios: página sin código compilado, sin pines ni vigilancia
+  fastW(a) { const cp = this.codePages; return cp !== undefined && cp[a >>> 12] === 0 && this.noFastW !== true; }
   chk(a, n, k) { if (a < 0x1000 || a + n > this.size) throw new MemFault(a, k); }
   r8(a) { a >>>= 0; if (a < 0x1000 || a >= this.size) throw new MemFault(a, 'lectura'); return this.u8[a]; }
-  r16(a) { a >>>= 0; this.chk(a, 2, 'lectura'); return this.u8[a] | (this.u8[a + 1] << 8); }
-  r32(a) { a >>>= 0; this.chk(a, 4, 'lectura'); return (this.u8[a] | (this.u8[a + 1] << 8) | (this.u8[a + 2] << 16) | (this.u8[a + 3] << 24)) >>> 0; }
+  r16(a) { a >>>= 0; if ((a & 1) === 0 && a >= 0x1000 && a < this.size) return this.u16[a >>> 1]; this.chk(a, 2, 'lectura'); return this.u8[a] | (this.u8[a + 1] << 8); }
+  r32(a) { a >>>= 0; if ((a & 3) === 0 && a >= 0x1000 && a < this.size) return this.u32[a >>> 2]; this.chk(a, 4, 'lectura'); return (this.u8[a] | (this.u8[a + 1] << 8) | (this.u8[a + 2] << 16) | (this.u8[a + 3] << 24)) >>> 0; }
   // Si la página contiene código ya compilado por el JIT, se invalidan sus bloques
   // ---- pines: valores de 32 bits que el juego no puede modificar (autos remotos del multijugador) ----
   pin(a, v) {
     a >>>= 0;
     if (!this.pinPages) { this.pinPages = new Uint8Array(this.size >>> 12); this.pins = new Map(); }
+    this.noFastW = true; // con pines activos, toda escritura pasa por la ruta lenta
     this.pins.set(a, v >>> 0); this.pinPages[a >>> 12] = 1; this.pinPages[(a + 3) >>> 12] = 1;
     this.u8[a] = v; this.u8[a + 1] = v >>> 8; this.u8[a + 2] = v >>> 16; this.u8[a + 3] = v >>> 24;
   }
@@ -58,12 +63,12 @@ export class Memory {
   pw(a, n) { const pp = this.pinPages; if (!pp) return; for (let p = a >>> 12, e = (a + n - 1) >>> 12; p <= e; p++) if (pp[p]) { this.repin(a, n); return; } }
   cw(a, n) { const cp = this.codePages; if (!cp) return; for (let p = a >>> 12, e = (a + n - 1) >>> 12; p <= e; p++) if (cp[p]) this.onCodeWrite(p); }
   w8(a, v) { a >>>= 0; if (a < 0x1000 || a >= this.size) throw new MemFault(a, 'escritura'); if (a < this.watchHi && a >= this.watchLo) this.onWatch(a, 1); if (this.codePages && this.codePages[a >>> 12]) this.onCodeWrite(a >>> 12); this.u8[a] = v; if (this.pinPages && this.pinPages[a >>> 12]) this.repin(a, 1); }
-  w16(a, v) { a >>>= 0; this.chk(a, 2, 'escritura'); if (a < this.watchHi && a >= this.watchLo) this.onWatch(a, 2); if (this.codePages && this.codePages[a >>> 12]) this.onCodeWrite(a >>> 12); this.u8[a] = v; this.u8[a + 1] = v >>> 8; if (this.pinPages && this.pinPages[a >>> 12]) this.repin(a, 2); }
-  w32(a, v) { a >>>= 0; this.chk(a, 4, 'escritura'); if (a < this.watchHi && a >= this.watchLo) this.onWatch(a, 4); if (this.codePages && this.codePages[a >>> 12]) this.onCodeWrite(a >>> 12); this.u8[a] = v; this.u8[a + 1] = v >>> 8; this.u8[a + 2] = v >>> 16; this.u8[a + 3] = v >>> 24; if (this.pinPages && this.pinPages[a >>> 12]) this.repin(a, 4); }
-  f32(a) { a >>>= 0; this.chk(a, 4, 'lectura'); return this.dv.getFloat32(a, true); }
-  f64(a) { a >>>= 0; this.chk(a, 8, 'lectura'); return this.dv.getFloat64(a, true); }
-  wf32(a, v) { a >>>= 0; this.chk(a, 4, 'escritura'); this.cw(a, 4); this.dv.setFloat32(a, v, true); this.pw(a, 4); }
-  wf64(a, v) { a >>>= 0; this.chk(a, 8, 'escritura'); this.cw(a, 8); this.dv.setFloat64(a, v, true); this.pw(a, 8); }
+  w16(a, v) { a >>>= 0; if ((a & 1) === 0 && a >= 0x1000 && a < this.size && this.fastW(a)) { this.u16[a >>> 1] = v; return; } this.chk(a, 2, 'escritura'); if (a < this.watchHi && a >= this.watchLo) this.onWatch(a, 2); if (this.codePages && this.codePages[a >>> 12]) this.onCodeWrite(a >>> 12); this.u8[a] = v; this.u8[a + 1] = v >>> 8; if (this.pinPages && this.pinPages[a >>> 12]) this.repin(a, 2); }
+  w32(a, v) { a >>>= 0; if ((a & 3) === 0 && a >= 0x1000 && a < this.size && this.fastW(a)) { this.u32[a >>> 2] = v; return; } this.chk(a, 4, 'escritura'); if (a < this.watchHi && a >= this.watchLo) this.onWatch(a, 4); if (this.codePages && this.codePages[a >>> 12]) this.onCodeWrite(a >>> 12); this.u8[a] = v; this.u8[a + 1] = v >>> 8; this.u8[a + 2] = v >>> 16; this.u8[a + 3] = v >>> 24; if (this.pinPages && this.pinPages[a >>> 12]) this.repin(a, 4); }
+  f32(a) { a >>>= 0; if ((a & 3) === 0 && a >= 0x1000 && a < this.size) return this.f32a[a >>> 2]; this.chk(a, 4, 'lectura'); return this.dv.getFloat32(a, true); }
+  f64(a) { a >>>= 0; if ((a & 7) === 0 && a >= 0x1000 && a < this.size) return this.f64a[a >>> 3]; this.chk(a, 8, 'lectura'); return this.dv.getFloat64(a, true); }
+  wf32(a, v) { a >>>= 0; if ((a & 3) === 0 && a >= 0x1000 && a < this.size && this.fastW(a)) { this.f32a[a >>> 2] = v; return; } this.chk(a, 4, 'escritura'); this.cw(a, 4); this.dv.setFloat32(a, v, true); this.pw(a, 4); }
+  wf64(a, v) { a >>>= 0; if ((a & 7) === 0 && a >= 0x1000 && a < this.size && this.fastW(a)) { this.f64a[a >>> 3] = v; return; } this.chk(a, 8, 'escritura'); this.cw(a, 8); this.dv.setFloat64(a, v, true); this.pw(a, 8); }
   cstr(a, max = 4096) {
     if (!a) return null;
     let s = '';

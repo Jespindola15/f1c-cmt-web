@@ -271,6 +271,7 @@ function translate(ins, need) {
     return null;
   }
   // ---- 0F xx ----
+  if (osz === 4) { const mm = mmxCode(ins, isMem, pre); if (mm) return { code: mm }; }
   if (osz !== 4 && !((op >= 0x90 && op <= 0x9f) || op === 0xb6 || op === 0xbe)) return null;
   if (op >= 0x80 && op <= 0x8f) { const t = (next + (ins.imm | 0)) >>> 0; return { code: `c.eip=${CC[op & 15]}?${t}:${next};`, end: true }; }
   if (op >= 0x90 && op <= 0x9f) return { code: `{${pre}${wrRM(1, `${CC[op & 15]}?1:0`)}}` };
@@ -290,7 +291,9 @@ function translate(ins, need) {
 // x87 frecuente en el render y la física; misma semántica que fpu.js (exec)
 function fpuFast(op, mod, reg, rm) {
   const ARITH = { 0: 'v0+v', 1: 'v0*v', 4: 'v0-v', 5: 'v-v0', 6: 'v0/v', 7: 'v/v0' };
+  const CMP = (B) => `{const x=f.get(0),y=${B};if(x!==x||y!==y){f.c0=1;f.c2=1;f.c3=1;}else{f.c2=0;f.c0=x<y?1:0;f.c3=x===y?1:0;}}`;
   if (mod !== 3) {
+    if ((op === 0xd8 || op === 0xdc) && (reg === 2 || reg === 3)) return CMP(op === 0xd8 ? 'm.f32(a)' : 'm.f64(a)') + (reg === 3 ? 'f.pop();' : '');
     if ((op === 0xd8 || op === 0xdc) && ARITH[reg]) return `const v=${op === 0xd8 ? 'm.f32(a)' : 'm.f64(a)'},v0=f.get(0);f.set(0,${ARITH[reg]});`;
     if (op === 0xda && ARITH[reg]) return `const v=m.r32(a)|0,v0=f.get(0);f.set(0,${ARITH[reg]});`;
     if (op === 0xd9 && reg === 0) return 'f.push(m.f32(a));';
@@ -308,6 +311,9 @@ function fpuFast(op, mod, reg, rm) {
     if (op === 0xdf && reg === 3) return 'm.w16(a,f.toInt(f.pop(),16)&0xffff);';
     return null;
   }
+  if (op === 0xd8 && (reg === 2 || reg === 3)) return CMP(`f.get(${rm})`) + (reg === 3 ? 'f.pop();' : '');
+  if (op === 0xde && reg === 3 && rm === 1) return CMP('f.get(1)') + 'f.pop();f.pop();';
+  if (op === 0xdf && reg === 4 && rm === 0) return 'r[0]=(r[0]&0xffff0000)|(((f.sw&0x3fff&~0x4700)|(f.c0<<8)|(f.c1<<9)|(f.c2<<10)|(c.fpu.top<<11)|(f.c3<<14))&0xffff);';
   if (op === 0xd8 && ARITH[reg]) return `const v=f.get(${rm}),v0=f.get(0);f.set(0,${ARITH[reg]});`;
   if (op === 0xd9 && reg === 0) return `f.push(f.get(${rm}));`;
   if (op === 0xd9 && reg === 1) return `const t=f.get(0);f.set(0,f.get(${rm}));f.set(${rm},t);`;
@@ -390,7 +396,8 @@ function incdec(aop, A, sz, need, store) {
 }
 
 // ---------- compilación de un bloque ----------
-export function compileBlock(emu, eip) {
+// Decodifica y traduce el bloque básico que empieza en `eip`. Devuelve el cuerpo JS y los sucesores estáticos.
+function blockDecode(emu, eip) {
   const mem = emu.mem;
   const list = [];
   let a = eip;
@@ -404,8 +411,23 @@ export function compileBlock(emu, eip) {
     a = (a + ins.len) >>> 0;
     if (ctl) break;
   }
+  // sucesores estáticos (para regiones) y si el bloque puede salir de forma dinámica
+  const last = list[list.length - 1]; let succ = [], dyn = false;
+  if (!last || last.fallback) dyn = true;
+  else if (isControl(last)) { succ = staticSucc(last); if (!succ.length) dyn = true; }
+  else succ = [a];
+  // flags que el bloque lee antes de escribir (dado lo que necesitan sus sucesores)
+  return { list, next: a, succ, dyn };
+}
+function liveIn(dec, liveOut) {
+  let live = liveOut;
+  for (let i = dec.list.length - 1; i >= 0; i--) { const ins = dec.list[i]; const fi = ins.fallback ? { reads: F_ALL, writes: 0 } : flagInfo(ins); live = (live & ~fi.writes) | fi.reads; }
+  return live;
+}
+function blockSource(emu, eip, dec = blockDecode(emu, eip), liveOut = F_ALL) {
+  const { list, next: a } = dec;
   // liveness de flags hacia atrás
-  let live = F_ALL;
+  let live = liveOut;
   for (let i = list.length - 1; i >= 0; i--) {
     const ins = list[i];
     const fi = ins.fallback ? { reads: F_ALL, writes: 0 } : flagInfo(ins);
@@ -413,7 +435,7 @@ export function compileBlock(emu, eip) {
     live = (live & ~fi.writes) | fi.reads;
   }
   let body = '';
-  let compiled = 0, fallbacks = 0, ended = false;
+  let compiled = 0, fallbacks = 0, ended = false, succ = [];
   const pages = new Set([eip >>> 12]);
   for (const ins of list) {
     pages.add(ins.start >>> 12); if (ins.len) pages.add((ins.start + ins.len - 1) >>> 12);
@@ -422,7 +444,7 @@ export function compileBlock(emu, eip) {
     if (t) {
       body += t.code;
       compiled++;
-      if (t.end) { ended = true; break; }
+      if (t.end) { ended = true; succ = staticSucc(ins); break; }
     } else {
       // intérprete para esta instrucción; si podía saltar, termina el bloque
       body += `c.eip=${ins.start};c.step();`;
@@ -430,7 +452,18 @@ export function compileBlock(emu, eip) {
       if (isControl(ins)) { body += 'return;'; ended = true; break; }
     }
   }
-  if (!ended) body += `c.eip=${a};`;
+  if (!ended) { body += `c.eip=${a};`; succ = [a]; }
+  return { list, body, pages, compiled, fallbacks, ended, succ };
+}
+function staticSucc(ins) {
+  const next = (ins.start + ins.len) >>> 0;
+  if (isCondJump(ins)) return ins.op === 0xeb || ins.op === 0xe9 ? [jumpTarget(ins)] : [jumpTarget(ins), next];
+  if (!ins.two && ins.op === 0xe8) return [(next + (ins.imm | 0)) >>> 0, next];
+  return [];
+}
+
+export function compileBlock(emu, eip) {
+  const { list, body, pages, compiled, fallbacks, ended } = blockSource(emu, eip);
   let src;
   const last = list[list.length - 1];
   const selfLoop = ended && fallbacks === 0 && last && !last.fallback && isCondJump(last) && jumpTarget(last) === eip;
@@ -438,10 +471,53 @@ export function compileBlock(emu, eip) {
     // bucle cerrado: se itera dentro de la función (hasta 4096 vueltas, para poder ceder el control)
     src = `c.instrStart=${eip};for(let it=0;it<4096;it++){c.icount+=${compiled};${body}if(c.eip!==${eip})return;}`;
   } else src = `c.icount+=${compiled};c.instrStart=${eip};${body}`;
+  return finish(emu, eip, src, pages, list.length, compiled, fallbacks);
+}
+
+// Región: varios bloques alcanzables por saltos estáticos (jcc, jmp, call y su retorno) compilados en UNA
+// función con un switch sobre EIP. Los saltos internos y los `ret` que vuelven dentro de la región no pasan
+// por el despachador. Cualquier EIP fuera de la región (API, hook, código no incluido) devuelve el control.
+const REGION_BLOCKS = 40, REGION_INSTRS = 900;
+export function compileRegion(emu, entry) {
+  const decs = new Map(); const queue = [entry]; let instrs = 0;
+  const hooks = emu.hooks;
+  if (hooks && hooks.has(entry)) return compileBlock(emu, entry);
+  while (queue.length && decs.size < REGION_BLOCKS && instrs < REGION_INSTRS) {
+    const e = queue.shift() >>> 0;
+    if (decs.has(e) || (e >= 0x00100000 && e < 0x00110000) || e < 0x1000) continue;
+    if (e !== entry && hooks && hooks.has(e)) continue;
+    let d; try { d = blockDecode(emu, e); } catch { continue; }
+    if (!d.list.length) continue;
+    decs.set(e, d); instrs += d.list.length;
+    for (const t of d.succ) if (!decs.has(t)) queue.push(t);
+  }
+  if (decs.size <= 1) return compileBlock(emu, entry);
+  // liveness de flags entre bloques de la región (punto fijo); salidas a código de fuera: todos vivos
+  const lin = new Map(); for (const e of decs.keys()) lin.set(e, 0);
+  const outOf = (d) => { if (d.dyn) return F_ALL; let o = 0; for (const t of d.succ) o |= decs.has(t) ? lin.get(t) : F_ALL; return o; };
+  for (let changed = true, guard = 0; changed && guard < 100; guard++) { changed = false;
+    for (const [e, d] of decs) { const v = liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
+  const pages = new Set(); let compiled = 0, fallbacks = 0, n = 0;
+  let cases = '';
+  for (const [e, d] of decs) {
+    const b = blockSource(emu, e, d, emu.regionFlags === false ? F_ALL : outOf(d));
+    for (const p of b.pages) pages.add(p); compiled += b.compiled; fallbacks += b.fallbacks; n += b.list.length;
+    cases += `case ${e}:{c.icount+=${b.compiled};c.instrStart=${e};${b.body}}continue;`;
+  }
+  const src = `const self=c.jitSelf;for(let it=0;it<2048;it++){if(self.dead||c.icount>=c.stopAt)return;switch(c.eip){${cases}default:return;}}`;
+  return finish(emu, entry, src, pages, n, compiled, fallbacks, true);
+}
+
+function finish(emu, eip, src, pages, n, compiled, fallbacks, region = false) {
+  if (!emu.noInline) src = inlineOps(src);
+  if (emu.cacheRegs !== false) src = cacheRegs(src);
+  if (emu.jitNames) src += `\n//# sourceURL=${region ? 'reg' : 'blk'}_${eip.toString(16)}.js`;
   let fn;
-  try { fn = new Function('c', 'r', 'm', src); }
-  catch (e) { throw new Error(`JIT: error compilando bloque ${eip.toString(16)}: ${e.message}\n${src}`); }
-  fn.pages = pages; fn.n = list.length; fn.compiled = compiled; fn.fallbacks = fallbacks;
+  try {
+    if (region) { const inner = new Function('c', 'r', 'm', src); fn = (c, r, m) => { c.jitSelf = fn; inner(c, r, m); }; }
+    else fn = new Function('c', 'r', 'm', src);
+  } catch (e) { throw new Error(`JIT: error compilando ${region ? 'región' : 'bloque'} ${eip.toString(16)}: ${e.message}\n${src.slice(0, 2000)}`); }
+  fn.pages = pages; fn.n = n; fn.compiled = compiled; fn.fallbacks = fallbacks; fn.dead = false;
   return fn;
 }
 
@@ -476,7 +552,7 @@ export class BlockCache {
   get(eip) {
     let fn = this.map.get(eip);
     if (fn) return fn;
-    fn = compileBlock(this.emu, eip);
+    fn = this.emu.useRegions === false ? compileBlock(this.emu, eip) : compileRegion(this.emu, eip);
     // hook de ejecución: se llama antes del bloque; si devuelve false, el bloque no se ejecuta
     // (el hook debe haber dejado c.eip en el destino que corresponda). Costo cero para bloques sin hook.
     const hook = this.emu.hooks && this.emu.hooks.get(eip);
@@ -494,9 +570,166 @@ export class BlockCache {
     const s = this.byPage.get(page);
     this.emu.mem.codePages[page] = 0;
     if (!s) return;
-    for (const e of s) { this.map.delete(e); const fi = e - this.fastBase; if (fi >= 0 && fi < 0x200000) this.fast[fi] = undefined; this.stats.invalidated++; }
+    for (const e of s) { const old = this.map.get(e); if (old) old.dead = true; this.map.delete(e); const fi = e - this.fastBase; if (fi >= 0 && fi < 0x200000) this.fast[fi] = undefined; this.stats.invalidated++; }
     this.byPage.delete(page);
   }
   forget(eip) { this.map.delete(eip); const fi = eip - this.fastBase; if (fi >= 0 && fi < 0x200000) this.fast[fi] = undefined; }
   clear() { for (const p of [...this.byPage.keys()]) this.invalidatePage(p); }
+}
+
+// ---------- MMX (sin prefijo) traducido en línea; misma semántica que simd.js ----------
+// D = vistas de los registros MMX (c.simd.M), S = vistas del scratch (operando de memoria).
+const LANE = { 1: ['u8', 'i8', 8], 2: ['u16', 'i16', 4], 4: ['u32', 'i32', 2] };
+const sat = (lo, hi) => (x) => `(${x}>${hi}?${hi}:${x}<${lo}?${lo}:${x})`;
+const MMX_LANES = {
+  0xfc: [1, 0, (a, b) => `${a}+${b}`], 0xfd: [2, 0, (a, b) => `${a}+${b}`], 0xfe: [4, 0, (a, b) => `${a}+${b}`],
+  0xf8: [1, 0, (a, b) => `${a}-${b}`], 0xf9: [2, 0, (a, b) => `${a}-${b}`], 0xfa: [4, 0, (a, b) => `${a}-${b}`],
+  0xec: [1, 1, (a, b) => sat(-128, 127)(`(${a}+${b})`)], 0xed: [2, 1, (a, b) => sat(-32768, 32767)(`(${a}+${b})`)],
+  0xe8: [1, 1, (a, b) => sat(-128, 127)(`(${a}-${b})`)], 0xe9: [2, 1, (a, b) => sat(-32768, 32767)(`(${a}-${b})`)],
+  0xdc: [1, 0, (a, b) => sat(0, 255)(`(${a}+${b})`)], 0xdd: [2, 0, (a, b) => sat(0, 65535)(`(${a}+${b})`)],
+  0xd8: [1, 0, (a, b) => sat(0, 255)(`(${a}-${b})`)], 0xd9: [2, 0, (a, b) => sat(0, 65535)(`(${a}-${b})`)],
+  0xd5: [2, 1, (a, b) => `Math.imul(${a},${b})`], 0xe5: [2, 1, (a, b) => `(${a}*${b})>>16`], 0xe4: [2, 0, (a, b) => `(${a}*${b})>>>16`],
+  0xdb: [4, 0, (a, b) => `${a}&${b}`], 0xdf: [4, 0, (a, b) => `(~${a})&${b}`], 0xeb: [4, 0, (a, b) => `${a}|${b}`], 0xef: [4, 0, (a, b) => `${a}^${b}`],
+  0x74: [1, 0, (a, b) => `${a}===${b}?255:0`], 0x75: [2, 0, (a, b) => `${a}===${b}?65535:0`], 0x76: [4, 0, (a, b) => `${a}===${b}?4294967295:0`],
+  0x64: [1, 1, (a, b) => `${a}>${b}?-1:0`], 0x65: [2, 1, (a, b) => `${a}>${b}?-1:0`], 0x66: [4, 1, (a, b) => `${a}>${b}?-1:0`],
+  0xda: [1, 0, (a, b) => `${a}<${b}?${a}:${b}`], 0xde: [1, 0, (a, b) => `${a}>${b}?${a}:${b}`], 0xea: [2, 1, (a, b) => `${a}<${b}?${a}:${b}`], 0xee: [2, 1, (a, b) => `${a}>${b}?${a}:${b}`],
+  0xe0: [1, 0, (a, b) => `(${a}+${b}+1)>>1`], 0xe3: [2, 0, (a, b) => `(${a}+${b}+1)>>1`],
+};
+function mmxCode(ins, isMem, pre) {
+  const { op, reg, rm } = ins;
+  const loadS = isMem ? 'S.u32[0]=m.r32(a);S.u32[1]=m.r32(a+4);' : '';
+  // fuente como (vista, índice base en lanes)
+  const src = (w, signed) => { const [u, i, n] = LANE[w]; const v = signed ? i : u; return isMem ? [`S.${v}`, 0, n] : [`D.${v}`, rm * n, n]; };
+  const head = `${pre}const D=c.simd.M${isMem ? ',S=c.simd.S' : ''};`;
+  if (op === 0x77) return '{}'; // emms
+  if (op === 0x6f) return isMem ? `{${head}D.u32[${reg * 2}]=m.r32(a);D.u32[${reg * 2 + 1}]=m.r32(a+4);}` : `{const D=c.simd.M;D.u32[${reg * 2}]=D.u32[${rm * 2}];D.u32[${reg * 2 + 1}]=D.u32[${rm * 2 + 1}];}`;
+  if (op === 0x7f) return isMem ? `{${head}m.w32(a,D.u32[${reg * 2}]);m.w32(a+4,D.u32[${reg * 2 + 1}]);}` : `{const D=c.simd.M;D.u32[${rm * 2}]=D.u32[${reg * 2}];D.u32[${rm * 2 + 1}]=D.u32[${reg * 2 + 1}];}`;
+  if (op === 0x6e) return `{${head}D.u32[${reg * 2}]=${isMem ? 'm.r32(a)' : `r[${rm}]`};D.u32[${reg * 2 + 1}]=0;}`;
+  if (op === 0x7e) return isMem ? `{${head}m.w32(a,D.u32[${reg * 2}]);}` : `{const D=c.simd.M;r[${rm}]=D.u32[${reg * 2}];}`;
+  const L = MMX_LANES[op];
+  if (L) {
+    const [w, signed, f] = L; const [u, i, n] = LANE[w]; const dv = `D.${signed ? i : u}`; const [sv, sb] = src(w, signed); const db = reg * n;
+    let body = '';
+    for (let k = 0; k < n; k++) body += `const t${k}=${f(`${dv}[${db + k}]`, `${sv}[${sb + k}]`)};`;
+    for (let k = 0; k < n; k++) body += `${dv}[${db + k}]=t${k};`;
+    return `{${head}${loadS}${body}}`;
+  }
+  if (op === 0x63 || op === 0x67 || op === 0x6b) { // packsswb / packuswb / packssdw
+    const wide = op === 0x6b ? 4 : 2; const [, wi, n] = LANE[wide]; const outV = op === 0x63 ? 'i8' : op === 0x67 ? 'u8' : 'i16';
+    const S8 = op === 0x63 ? sat(-128, 127) : op === 0x67 ? sat(0, 255) : sat(-32768, 32767); const [sv, sb] = src(wide, 1); const ob = reg * (8 / (wide / 2)) ;
+    let body = ''; for (let k = 0; k < n; k++) body += `const a${k}=D.${wi}[${reg * n + k}],b${k}=${sv}[${sb + k}];`;
+    for (let k = 0; k < n; k++) body += `D.${outV}[${ob + k}]=${S8(`a${k}`)};`;
+    for (let k = 0; k < n; k++) body += `D.${outV}[${ob + n + k}]=${S8(`b${k}`)};`;
+    return `{${head}${loadS}${body}}`;
+  }
+  if (op >= 0x60 && op <= 0x62 || op >= 0x68 && op <= 0x6a) { // punpckl / punpckh
+    const w = op <= 0x62 ? 1 << (op - 0x60) : 1 << (op - 0x68); const hi = op >= 0x68; const [u, , n] = LANE[w]; const [sv, sb] = src(w, 0); const half = n / 2, off = hi ? half : 0;
+    let body = ''; for (let k = 0; k < half; k++) body += `const a${k}=D.${u}[${reg * n + off + k}],b${k}=${sv}[${sb + off + k}];`;
+    for (let k = 0; k < half; k++) body += `D.${u}[${reg * n + 2 * k}]=a${k};D.${u}[${reg * n + 2 * k + 1}]=b${k};`;
+    return `{${head}${loadS}${body}}`;
+  }
+  if ((op === 0x71 || op === 0x72) && !isMem && (reg === 2 || reg === 4 || reg === 6)) { // psrl/psra/psll imm (w,d)
+    const w = op === 0x71 ? 2 : 4; const [u, i, n] = LANE[w]; const bits = w * 8; const cnt = ins.imm & 255; const b = rm * n; let body = '';
+    for (let k = 0; k < n; k++) {
+      if (reg === 4) body += `D.${i}[${b + k}]=D.${i}[${b + k}]>>${Math.min(cnt, bits - 1)};`;
+      else if (cnt >= bits) body += `D.${u}[${b + k}]=0;`;
+      else body += reg === 6 ? `D.${u}[${b + k}]=D.${u}[${b + k}]<<${cnt};` : `D.${u}[${b + k}]=D.${u}[${b + k}]>>>${cnt};`;
+    }
+    return `{const D=c.simd.M;${body}}`;
+  }
+  return null;
+}
+
+// ---------- expansión en línea de accesos a memoria y a la pila x87 ----------
+// V8 deja de "inlinear" llamadas cuando el bloque generado es grande; estas expansiones evitan la llamada
+// en el caso común (acceso alineado, página sin código compilado) y caen en el método original si no.
+// Cada ocurrencia usa temporales propios (_tN) para que las expresiones anidadas no se pisen.
+const MEM_INLINE = {
+  'm.r32(': (A, T) => `(${T}=(${A})>>>0,(${T}&3)===0&&${T}>=4096&&${T}<1073741824?U32[${T}>>>2]:m.r32(${T}))`,
+  'm.r16(': (A, T) => `(${T}=(${A})>>>0,(${T}&1)===0&&${T}>=4096&&${T}<1073741824?U16[${T}>>>1]:m.r16(${T}))`,
+  'm.f32(': (A, T) => `(${T}=(${A})>>>0,(${T}&3)===0&&${T}>=4096&&${T}<1073741824?F32[${T}>>>2]:m.f32(${T}))`,
+  'm.f64(': (A, T) => `(${T}=(${A})>>>0,(${T}&7)===0&&${T}>=4096&&${T}<1073741824?F64[${T}>>>3]:m.f64(${T}))`,
+  'f.get(': (A) => `ST[(FP.top+(${A}))&7]`,
+  'f.pop(': (A, T) => `(${T}=FP.top,TG[${T}]=1,FP.top=(${T}+1)&7,ST[${T}])`,
+};
+const MEM_INLINE2 = {
+  'm.w32(': (A, V, T, U) => `(${U}=${V},${T}=(${A})>>>0,((${T}&3)===0&&${T}>=4096&&${T}<1073741824&&FW&&CP[${T}>>>12]===0)?(U32[${T}>>>2]=${U}):m.w32(${T},${U}))`,
+  'm.w16(': (A, V, T, U) => `(${U}=${V},${T}=(${A})>>>0,((${T}&1)===0&&${T}>=4096&&${T}<1073741824&&FW&&CP[${T}>>>12]===0)?(U16[${T}>>>1]=${U}):m.w16(${T},${U}))`,
+  'm.wf32(': (A, V, T, U) => `(${U}=${V},${T}=(${A})>>>0,((${T}&3)===0&&${T}>=4096&&${T}<1073741824&&FW&&CP[${T}>>>12]===0)?(F32[${T}>>>2]=${U}):m.wf32(${T},${U}))`,
+  'm.wf64(': (A, V, T, U) => `(${U}=${V},${T}=(${A})>>>0,((${T}&7)===0&&${T}>=4096&&${T}<1073741824&&FW&&CP[${T}>>>12]===0)?(F64[${T}>>>3]=${U}):m.wf64(${T},${U}))`,
+  'f.set(': (A, V, T, U) => `(${U}=${V},${T}=(FP.top+(${A}))&7,ST[${T}]=${U},TG[${T}]=0)`,
+};
+// devuelve [argumentos de nivel superior, índice del ')' de cierre]
+function args(src, i) {
+  let depth = 0, start = i; const out = [];
+  for (; i < src.length; i++) { const ch = src[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') { if (depth === 0) { out.push(src.slice(start, i)); return [out, i]; } depth--; }
+    else if (ch === ',' && depth === 0) { out.push(src.slice(start, i)); start = i + 1; } }
+  return null;
+}
+function inlineOps(src) {
+  let n = 0;
+  const keys = [...Object.keys(MEM_INLINE), ...Object.keys(MEM_INLINE2), 'f.push('];
+  const rewrite = (s) => {
+    let out = '', i = 0;
+    for (;;) {
+      let best = -1, key = null;
+      for (const k of keys) { const j = s.indexOf(k, i); if (j >= 0 && (best < 0 || j < best) && (j === 0 || !/[\w.$]/.test(s[j - 1]))) { best = j; key = k; } }
+      if (best < 0) { out += s.slice(i); return out; }
+      const r = args(s, best + key.length); if (!r) { out += s.slice(i); return out; }
+      const [a, end] = r; const A = a.map(rewrite);
+      out += s.slice(i, best);
+      if (MEM_INLINE[key] && A.length === (key === 'f.pop(' ? 1 : 1)) { const T = `_t${n++}`; out += MEM_INLINE[key](A[0], T); }
+      else if (MEM_INLINE2[key] && A.length === 2) { const T = `_t${n++}`, U = `_t${n++}`; out += MEM_INLINE2[key](A[0], A[1], T, U); }
+      else if (key === 'f.push(' && A.length === 1) { const U = `_t${n++}`; out += `(${U}=${A[0]},FP.top=(FP.top-1)&7,ST[FP.top]=${U},TG[FP.top]=0)`; }
+      else out += s.slice(best, end + 1);
+      i = end + 1;
+    }
+  };
+  const body = rewrite(src);
+  if (!n && body === src) return src;
+  let decl = 'const U32=m.u32,U16=m.u16,F32=m.f32a,F64=m.f64a,CP=m.codePages,FW=m.noFastW!==true,FP=c.fpu,ST=FP.st,TG=FP.tagEmpty;';
+  if (n) decl += 'let ' + Array.from({ length: n }, (_, k) => `_t${k}`).join(',') + ';';
+  return decl + body;
+}
+
+// ---------- registros x86 en variables locales ----------
+// Dentro de un bloque/región los 8 registros viven en locales ($0..$7); se vuelcan a c.r antes de cualquier
+// salida (return / fin) y alrededor de las llamadas que leen o escriben registros (intérprete, imulSet, etc.).
+const SYNC = '(r[0]=$0,r[1]=$1,r[2]=$2,r[3]=$3,r[4]=$4,r[5]=$5,r[6]=$6,r[7]=$7)';
+const LOAD = '($0=r[0],$1=r[1],$2=r[2],$3=r[3],$4=r[4],$5=r[5],$6=r[6],$7=r[7])';
+const BARRIERS = ['c.step(', 'c.getReg(', 'c.setReg(', 'c.imulSet(', 'c.fpu.exec('];
+function cacheRegs(src) {
+  let out = '', i = 0, k = 0;
+  for (;;) {
+    let best = -1, key = null;
+    for (const b of BARRIERS) { const j = src.indexOf(b, i); if (j >= 0 && (best < 0 || j < best)) { best = j; key = b; } }
+    if (best < 0) { out += src.slice(i); break; }
+    const r = args(src, best + key.length); if (!r) { out += src.slice(i); break; }
+    const call = src.slice(best, r[1] + 1); const T = `_rq${k++}`;
+    out += src.slice(i, best) + `(@SYNC@,${T}=${call},@LOAD@,${T})`;
+    i = r[1] + 1;
+  }
+  out = wrapRegWrites(out);
+  out = out.replace(/\br\[([0-7])\]/g, (m, d) => '$' + d).replace(/return;/g, '{@SYNC@;return;}');
+  const fp = out.includes('FP.top') || out.includes('c.fpu.top');
+  if (fp) out = out.split('FP.top').join('$T').split('c.fpu.top').join('$T');
+  out = out.split('@SYNC@').join(fp ? SYNC.slice(0, -1) + ',c.fpu.top=$T)' : SYNC).split('@LOAD@').join(fp ? LOAD.slice(0, -1) + ',$T=c.fpu.top)' : LOAD);
+  const decl = `let $0=r[0],$1=r[1],$2=r[2],$3=r[3],$4=r[4],$5=r[5],$6=r[6],$7=r[7]${fp ? ',$T=c.fpu.top' : ''}` + (k ? ',' + Array.from({ length: k }, (_, j) => `_rq${j}`).join(',') : '') + ';';
+  return decl + out + `;${fp ? SYNC.slice(0, -1) + ',c.fpu.top=$T)' : SYNC};`;
+}
+
+// `r[k]=EXPR` -> `r[k]=(EXPR)>>>0`: con locales hay que normalizar a uint32 como hacía el Uint32Array
+function wrapRegWrites(src) {
+  let out = '', i = 0; const re = /\br\[([0-7])\]=(?!=)/g; let mt;
+  while ((mt = re.exec(src))) {
+    const st = mt.index + mt[0].length; let depth = 0, j = st;
+    for (; j < src.length; j++) { const ch = src[j];
+      if (ch === '(' || ch === '[' || ch === '{') depth++;
+      else if (ch === ')' || ch === ']' || ch === '}') { if (depth === 0) break; depth--; }
+      else if ((ch === ';' || ch === ',') && depth === 0) break; }
+    out += src.slice(i, st) + `(${src.slice(st, j)})>>>0`; i = j; re.lastIndex = j;
+  }
+  return out + src.slice(i);
 }

@@ -53,6 +53,9 @@ export class SIMD {
   constructor(cpu) {
     this.cpu = cpu;
     this.xbuf = new ArrayBuffer(128); this.mbuf = new ArrayBuffer(64);
+    // vistas persistentes para el JIT (MMX en mbuf; scratch de 8 bytes para operandos de memoria)
+    const mk = (b) => ({ u8: new Uint8Array(b), i8: new Int8Array(b), u16: new Uint16Array(b), i16: new Int16Array(b), u32: new Uint32Array(b), i32: new Int32Array(b) });
+    this.M = mk(this.mbuf); this.S = mk(new ArrayBuffer(8));
     this.mxcsr = 0x1f80;
     this.t1 = new Uint8Array(16); this.t2 = new Uint8Array(16); this.t3 = new Uint8Array(16);
   }

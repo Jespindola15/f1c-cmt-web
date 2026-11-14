@@ -17,7 +17,7 @@ emu.onPresent = (d) => { frame++;
   if (frame % 100 === 0 || frame < 3) console.log(`[FRAME] ${frame} instr=${emu.cpu.icount} t=${((Date.now() - t0) / 1000).toFixed(0)}s draws=${JSON.stringify(draws)} texturas=${emu.d3d.stats.textures} archivos=${emu.vfs.opened.size}`); };
 const end = Date.now() + Number(SECS) * 1000; let r;
 const prof = process.env.PROF ? new Map() : null; const api0 = new Map(emu.apiCounts);
-while (Date.now() < end) { r = emu.run(prof ? 200_000 : 10_000_000); if (prof) { const k = emu.cpu.eip >>> 4 << 4; prof.set(k, (prof.get(k) || 0) + 1); } if (r.status !== 'running' && r.status !== 'yield') { console.log(r.report?.text || r); break; } }
+while (Date.now() < end) { r = emu.run(prof ? Number(process.env.PROF) : 10_000_000); if (prof) { const k = emu.cpu.eip >>> 4 << 4; prof.set(k, (prof.get(k) || 0) + 1); } if (r.status !== 'running' && r.status !== 'yield') { console.log(r.report?.text || r); break; } }
 if (prof) { console.log("[PERFIL]", [...prof].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([k, v]) => k.toString(16) + ":" + v).join(" ")); console.log("[APIS]", [...emu.apiCounts].map(([k, v]) => [k, v - (api0.get(k) || 0)]).filter((x) => x[1]).sort((a, b) => b[1] - a[1]).slice(0, 15).map((x) => x.join("=")).join(" ")); }
 console.log("[ARCHIVOS]", [...emu.vfs.opened.keys()].slice(-12).join(" | ")); console.log(`[FIN] cuadros=${frame} instr=${emu.cpu.icount} draws=${JSON.stringify(draws)} stats=${JSON.stringify(emu.d3d.stats)}`);
 if (OUT && (r.status === 'running' || r.status === 'yield')) { const s = save(emu, OUT); console.log('[INSTANTÁNEA]', OUT, s); }

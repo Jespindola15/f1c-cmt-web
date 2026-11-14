@@ -329,7 +329,7 @@ export class Emulator {
     for (let i = args.length - 1; i >= 0; i--) c.push(args[i] >>> 0);
     c.push(HOST_RETURN);
     c.eip = addr >>> 0;
-    this.callDepth++;
+    this.callDepth++; const savedStop = c.stopAt; c.stopAt = Infinity; // dentro de un callback, las regiones no ceden
     try {
       let n = 0;
       while (c.eip !== HOST_RETURN) {
@@ -338,7 +338,7 @@ export class Emulator {
         else this.stepInterp();
         if (++n > limit) throw new HaltSignal(`Callback ${hex(addr)} superó ${limit} instrucciones`, {});
       }
-    } finally { this.callDepth--; }
+    } finally { this.callDepth--; c.stopAt = savedStop; }
     const ret = c.r[0];
     c.r[4] = savedEsp; c.eip = savedEip;
     return ret;
@@ -349,6 +349,7 @@ export class Emulator {
     const c = this.cpu;
     this.yieldRequested = false;
     const start = c.icount;
+    c.stopAt = start + maxInstr; // las regiones del JIT ceden aquí (misma granularidad que bloques sueltos)
     try {
       // ruta rápida: JIT sin perfilado ni traza diferida
       if (this.useJit && !this.profile && !(this.traceFrom && !this.traceStarted)) {
