@@ -1,8 +1,8 @@
-// Prepara el contenido para un origen autorizado (Cloudflare R2 o cualquier HTTPS): manifiesto con rutas, tamaños,
+// Prepara el contenido para un origen autorizado (Backblaze B2 o cualquier HTTPS): manifiesto con rutas, tamaños,
 // SHA-256 y grupo de carga, más (opcional) una copia de los archivos con la estructura que espera el sitio.
 //   node tools/make-content.mjs <carpeta del juego> <salida> [--copy] [--boot tools/boot-files.json]
 // Salida:  <salida>/manifest.json   y con --copy  <salida>/files/<ruta del juego con />
-// Subir a R2:  rclone copy <salida> r2:<bucket>/<prefijo>   (o wrangler r2 object put …, ver README)
+// Subir a Backblaze B2:  node tools/b2-upload.mjs <juego> <salida>/manifest.json <bucket>   (ver README)
 // No usar para publicar sin autorización de EA/CMT.
 import fs from 'node:fs';
 import path from 'node:path';

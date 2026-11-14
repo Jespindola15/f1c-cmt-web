@@ -1,8 +1,12 @@
 # Netlify: compila el sitio estático (sin dependencias) y publica dist/.
-# El sitio NO contiene archivos de EA ni de CMT: cada jugador importa su propia instalación desde el navegador.
+# El sitio NO contiene archivos de EA ni de CMT. Con Backblaze B2 configurado (variables B2_*), la función
+# netlify/functions/content-token.mjs entrega tokens de descarga a los usuarios con clave y el juego arranca solo.
 [build]
   command = "node tools/build-web.mjs"
   publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
 
 [build.environment]
   NODE_VERSION = "20"

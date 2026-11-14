@@ -1,8 +1,10 @@
-// Compila el sitio estático para Cloudflare Pages (o cualquier hosting HTTPS) en dist/:
+// Compila el sitio estático para Netlify (o cualquier hosting HTTPS) en dist/:
 //   node tools/build-web.mjs
-// Sólo infraestructura (HTML/JS/WASM del emulador). NO incluye archivos de EA ni de CMT: cada jugador importa su
-// propia instalación desde el navegador (OPFS). Opcional: config.json con {"contentBase": "https://…/"} si el
-// operador tiene autorización para servir los archivos (p.ej. un bucket R2), en cuyo caso se descargan bajo demanda.
+// Sólo infraestructura (HTML/JS/WASM del emulador). NO incluye archivos de EA ni de CMT.
+// config.json (arranque automático, sólo si el operador tiene autorización para distribuir el contenido):
+//   - B2_BUCKET definido (Backblaze B2 privado)  -> {"contentToken": "/api/content-token"} (función de Netlify)
+//   - CONTENT_BASE definido (HTTPS público/CORS) -> {"contentBase": "https://…/"}
+// Sin ninguna de las dos, cada jugador importa su propia instalación desde el navegador (OPFS).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +27,8 @@ fs.writeFileSync(path.join(OUT, '_headers'), `/*
 /web/*
   Cache-Control: public, max-age=3600
 `);
-if (process.env.CONTENT_BASE) fs.writeFileSync(path.join(OUT, 'config.json'), JSON.stringify({ contentBase: process.env.CONTENT_BASE }));
+const cfg = {}; if (process.env.B2_BUCKET) cfg.contentToken = process.env.CONTENT_TOKEN_URL || '/api/content-token'; else if (process.env.CONTENT_BASE) cfg.contentBase = process.env.CONTENT_BASE;
+if (Object.keys(cfg).length) fs.writeFileSync(path.join(OUT, 'config.json'), JSON.stringify(cfg));
+console.log(cfg.contentToken ? 'config.json: Backblaze B2 privado vía ' + cfg.contentToken : cfg.contentBase ? 'config.json: contenido en ' + cfg.contentBase : 'sin config.json: los jugadores importan su propia copia (falta B2_BUCKET o CONTENT_BASE en el entorno de build)');
 let n = 0, b = 0; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else { n++; b += fs.statSync(p).size; } } }; walk(OUT);
 console.log(`dist/: ${n} archivos, ${(b / 1024).toFixed(0)} KB (sin archivos del juego)`);

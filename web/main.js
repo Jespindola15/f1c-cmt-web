@@ -24,12 +24,13 @@ async function boot() {
   if (miss.length) { panel.show('Navegador no compatible', `Hace falta Google Chrome (o Edge) actualizado. Falta: ${miss.join(', ')}.`); return; }
   if (params.get('snap')) return startGame({ snap: params.get('snap') });
   const cfg = await fetch('/config.json').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
-  // Origen de contenido autorizado (R2/HTTPS): arranque automático con descarga y caché. ?import fuerza la copia propia.
-  const content = params.get('content') || cfg.contentBase;
+  // Contenido autorizado: B2 privado vía la función del sitio (cfg.contentToken) o una base HTTPS directa (cfg.contentBase).
+  // Arranque automático con descarga y caché. ?import fuerza la copia propia.
+  const content = params.get('content') || (params.get('token') ? '' : cfg.contentBase); const tokenUrl = params.get('token') || (params.get('content') ? '' : cfg.contentToken);
   // clave de acceso personal (?key=…): se guarda en este navegador y se quita de la barra de direcciones
   if (params.get('key')) { try { localStorage.setItem('f1cKey', params.get('key')); } catch {} const u = new URL(location.href); u.searchParams.delete('key'); history.replaceState(null, '', u); }
   let key = ''; try { key = localStorage.getItem('f1cKey') || ''; } catch {}
-  if (content && !params.has('import') && !params.has('setup')) return startGame({ source: { kind: 'net', base: new URL(content, location.href).href, key } });
+  if ((content || tokenUrl) && !params.has('import') && !params.has('setup')) return startGame({ source: { kind: 'net', base: content ? new URL(content, location.href).href : '', tokenUrl: tokenUrl ? new URL(tokenUrl, location.href).href : '', key } });
   const idx = await readIndex();
   if (idx) {
     if (params.has('setup')) return askImport(idx);
@@ -67,7 +68,7 @@ function onWorker(ev) { const m = ev.data;
   if (m.type === 'status') { if (m.text) $('ptitle').textContent = m.text; }
   else if (m.type === 'progress') panel.progress(m.total ? m.got / m.total : 0, `${m.label}`);
   else if (m.type === 'prefetch') panel.progress(m.total ? m.done / m.total : 1, m.finished ? 'Descarga completa' : `${(m.done / 1048576).toFixed(0)} / ${(m.total / 1048576).toFixed(0)} MB · ${m.files}/${m.count} archivos · ${m.mbps.toFixed(1)} MB/s · ${m.path}`);
-  else if (m.type === 'net') { if (m.phase === 'start') { netBusy = `Descargando ${m.path.split('\\').pop()} (${(m.size / 1048576).toFixed(1)} MB)…`; showNet(); } else if (m.phase === 'done') { netBusy = ''; showNet(); } else if (m.phase === 'error') addLog(`[NET] error ${m.path}: ${m.error}`); }
+  else if (m.type === 'net') { if (m.phase === 'start') { netBusy = `Descargando ${m.path.split('\\').pop()} (${(m.size / 1048576).toFixed(1)} MB)…`; showNet(); } else if (m.phase === 'progress') { netBusy = `Descargando ${m.path.split('\\').pop()} · ${(m.got / 1048576).toFixed(0)} / ${(m.size / 1048576).toFixed(0)} MB…`; showNet(); } else if (m.phase === 'done') { netBusy = ''; showNet(); } else if (m.phase === 'error') addLog(`[NET] error ${m.path}: ${m.error}`); }
   else if (m.type === 'boot') panel.progress(Math.min(1, m.instr / 1.2e10), `Arranque: ${(m.instr / 1e9).toFixed(1)} mil millones de instrucciones x86 · ${m.files} archivos leídos`);
   else if (m.type === 'ready') { W = m.w; H = m.h; window.f1c.ready = true; }
   else if (m.type === 'firstFrame') { panel.hide(); canvas.focus(); }

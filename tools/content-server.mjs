@@ -1,4 +1,4 @@
-// Origen de contenido de PRUEBA (simula R2/HTTPS en otro origen, con CORS): manifest.json de una carpeta y
+// Origen de contenido de PRUEBA (HTTPS directo en otro origen, con CORS): manifest.json de una carpeta y
 // files/<ruta> leídos de la instalación local (solo lectura). Registra cada descarga.
 //   node tools/content-server.mjs <carpeta del manifiesto> <carpeta del juego> [puerto=8900]
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';

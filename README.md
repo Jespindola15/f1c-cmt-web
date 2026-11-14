@@ -50,97 +50,95 @@ En carrera el rendimiento **todavía no alcanza** 40–60 FPS: hace falta ~3× (
 
 ## Jugar / publicar
 
-- **Jugadores (sin origen configurado):** entrar a la URL, *Elegir carpeta…* (la carpeta "F1 Challenge 2025 CMT"), esperar la copia (una sola
-  vez, ~3,7 GB en el almacenamiento privado del navegador) y el juego arranca solo. Las próximas veces arranca directo.
-  `?setup` vuelve a mostrar la importación. Nada se sube a ningún servidor y la instalación no se modifica.
-- **Publicar en Cloudflare Pages:** `node tools/build-web.mjs` → `npx wrangler pages deploy dist --project-name f1c-cmt-web`.
-  `dist/` (≈390 KB) tiene sólo el emulador y `_headers` con COOP/COEP; **no incluye archivos de EA ni de CMT**.
-  Si el operador tuviera autorización para distribuir los archivos, `CONTENT_BASE=https://…/ node tools/build-web.mjs`
-  agrega `config.json` y el juego los descarga bajo demanda (p.ej. desde R2) en lugar de importarlos.
-- **Publicar en Netlify (desde GitHub):** subir el repositorio a GitHub → en Netlify *Add new site → Import an
-  existing project* → elegir el repositorio. `netlify.toml` ya configura todo: comando `node tools/build-web.mjs`,
-  carpeta `dist`, Node 20 y los encabezados COOP/COEP. No hace falta instalar dependencias.
-- **Probar `dist/` en la PC:** `npm run build` y `npm run serve` → http://localhost:8800/
+- **Usuarios autorizados (con Backblaze B2 configurado):** abren `https://TU-SITIO.netlify.app/?key=SU-CLAVE` una vez
+  (la clave queda guardada en ese navegador) y el juego descarga lo necesario y arranca solo. Sin selector de carpeta,
+  sin instalar nada. Las visitas siguientes arrancan desde la caché del navegador.
+- **Sin contenido configurado:** cada jugador importa su propia instalación (*Elegir carpeta…* → copia única en el
+  almacenamiento privado del navegador). `?import` / `?setup` fuerzan ese modo aunque haya B2.
+- **Publicar en Netlify (desde GitHub):** `netlify.toml` ya configura todo: build `node tools/build-web.mjs`, carpeta
+  `dist`, función `netlify/functions/content-token.mjs`, Node 20, encabezados COOP/COEP. Sin dependencias.
+  `dist/` (≈400 KB) tiene sólo el emulador: **no incluye archivos de EA ni de CMT**.
+- **Probar en la PC:** `npm run build` y `npm run serve` → http://localhost:8800/
 - **Desarrollo local:** `node tools/dev-server.mjs "<carpeta del juego>" 8150 <carpeta instantáneas>` (`?snap=` para diagnóstico).
 
-## Distribución automática de contenido (R2 / HTTPS autorizado)
+## Distribución automática: Netlify + Backblaze B2 (sin Cloudflare)
 
-El sitio (emulador) y el contenido (archivos de EA/CMT) están separados. Sin origen configurado, el jugador importa su
-propia copia (selector de carpeta → OPFS). **Con un origen autorizado**, el jugador abre el enlace y juega:
+```
+navegador ──(1) GET /api/content-token + clave──▶ Netlify Function ──▶ B2 API (clave restringida, sólo en Netlify)
+   │            ◀── {base, token de descarga (sólo lectura, prefijo f1c/, vence en 6 h)}
+   └──(2) GET https://f00x.backblazeb2.com/file/<bucket>/f1c/files/…?Authorization=<token>  (directo a B2, CORS, Range)
+```
 
-1. Se descarga `manifest.json` (rutas, tamaños, SHA-256 y grupo de cada archivo; también se guarda en OPFS por si no hay red).
-2. Se descargan en paralelo **sólo los archivos del grupo `boot` que falten** (≈850 archivos, 195 MB: exe, configuración,
-   menús, autos del menú…), verificando el SHA-256 de cada uno, con progreso real (MB, archivos, MB/s).
-3. Arranca el juego. Todo lo demás (circuitos, autos, sonidos) se baja **cuando el juego lo abre** (XHR síncrono en el
-   worker, verificación SHA-256, aviso "Descargando …" en pantalla) y queda en la caché.
-4. Caché persistente en OPFS (`f1c-net/data.bin` + `index.json`) **indexada por hash**: al volver a entrar no se
-   descarga nada; si cambia el contenido sólo bajan los archivos cuyo hash cambió.
+- **Netlify** sirve el sitio y una función mínima que valida la clave del usuario (`ACCESS_KEYS`) y pide a B2 un token
+  de descarga con `b2_get_download_authorization`. Las claves de B2 nunca llegan al navegador; el token sólo sirve para
+  leer el prefijo del contenido y vence solo. Los archivos del juego **no pasan por Netlify** (no gastan su ancho de banda).
+- **B2** guarda el contenido en un bucket **privado**; sin token responde 401. La regla CORS permite sólo el dominio del
+  sitio, sólo descargas por nombre y el encabezado `Range`.
+- **Cliente** (`web/netcache.js`): manifiesto con ruta, tamaño, SHA-256 y grupo; primero el grupo `boot` (≈850 archivos,
+  195 MB) en paralelo, el resto cuando el juego lo abre. Descargas por rangos de 8 MB **reanudables**: un archivo a medio
+  bajar se retoma desde el último byte guardado, tanto tras un corte de red como al cerrar y reabrir la página. Cada
+  archivo se verifica con SHA-256 antes de usarse. Caché OPFS por hash: la segunda visita no descarga nada y, si cambia
+  el contenido, sólo bajan los archivos cuyo hash cambió. Si el token vence, se pide otro sin interrumpir el juego.
 
-Pruebas realizadas (Chromium, sitio en un origen y contenido en otro con CORS, `tools/net-test.mjs`):
+### Configuración (una vez; sólo con autorización para distribuir los archivos de EA/CMT)
 
-| Corrida | Resultado |
+1. **Backblaze:** crear la cuenta en backblaze.com (B2 Cloud Storage). Recomendado: cargar un medio de pago y poner
+   topes en *Caps & Alerts* (p. ej. US$ 1/día) — ver costos abajo. En *Application Keys* copiar la **Master Application Key**
+   (keyID + applicationKey): se usa sólo en tu PC para los pasos 2 y 3.
+2. **Bucket y clave restringida** (PowerShell, en la carpeta del proyecto):
+   ```
+   $env:B2_KEY_ID="<keyID maestra>"; $env:B2_APP_KEY="<applicationKey maestra>"
+   node tools/b2-setup.mjs f1c-cmt https://TU-SITIO.netlify.app
+   ```
+   Crea el bucket privado `f1c-cmt` con CORS para tu dominio y una clave **sólo lectura + tokens** para ese bucket/prefijo.
+   Muestra `B2_KEY_ID` / `B2_APP_KEY` para Netlify (copiarlas: B2 no vuelve a mostrar la clave).
+3. **Subir el contenido** desde tu instalación (no se modifica; reanudable, omite lo que ya está con el mismo SHA-256):
+   ```
+   node tools/make-content.mjs "D:\descargas2\CMT 2025 F1C (8th gear)\F1 Challenge 2025 CMT" contenido
+   node tools/b2-upload.mjs "D:\descargas2\CMT 2025 F1C (8th gear)\F1 Challenge 2025 CMT" contenido\manifest.json f1c-cmt
+   ```
+4. **Netlify** → *Site configuration → Environment variables* (scope: Builds y Functions):
+   `B2_KEY_ID`, `B2_APP_KEY` (las restringidas del paso 2), `B2_BUCKET=f1c-cmt`, `ACCESS_KEYS=clave1,clave2,…`
+   (una por persona; generar con `node -e "console.log(require('crypto').randomBytes(12).toString('base64url'))"`).
+   Borrar `CONTENT_BASE` si existía. Luego *Deploys → Trigger deploy → Clear cache and deploy site*.
+   Opcionales: `TOKEN_SECONDS` (validez del token, 21600 por defecto), `B2_PREFIX` (`f1c/`), `ACCESS_OPEN=1` (sin clave).
+5. **Verificar en producción:** `node tools/check-origin.mjs https://TU-SITIO.netlify.app <una clave> --boot`
+   (COOP/COEP, `config.json`, función con y sin clave, bucket privado, CORS, Range, token falso, SHA-256 de los 850
+   archivos de arranque).
+6. Repartir `https://TU-SITIO.netlify.app/?key=<clave>`. Para revocar a alguien: quitar su clave de `ACCESS_KEYS` y
+   redeployar (su token vigente deja de servir como mucho en `TOKEN_SECONDS`).
+
+### Límites y costos (consultados el 14/11/2026)
+
+| | Qué consume este sitio | Costo |
+|---|---|---|
+| **B2 almacenamiento** | 3,72 GB de contenido | Primeros 10 GB gratis → **US$ 0**. Después US$ 6,95/TB/mes |
+| **B2 descargas, con medio de pago** | ≈195 MB por usuario nuevo para arrancar + lo que abra (≈0,3–1 GB por circuito/autos) | Gratis hasta 3× lo almacenado (≈11 GB/mes); luego US$ 0,01/GB → 100 usuarios nuevos × 1 GB ≈ **US$ 0,90/mes** |
+| **B2 sin medio de pago** | idem | 1 GB/día de descarga y 2.500 descargas (clase B)/día gratis; al superar el tope **se corta** → ≈2 arranques en frío por día. Sirve para probar, no para varios usuarios |
+| **B2 llamadas a la API** | 1 token cada ~3 h por instancia activa de la función | Clases A, B y C sin costo para cuentas con pago |
+| **Netlify Free** | sitio ≈0,4 MB por visita nueva, ≈45 pedidos, 1 llamada a la función | 300 créditos/mes con tope duro: 20 créditos/GB, 2 créditos/10.000 pedidos, 10 créditos/GB-hora de función, **15 créditos por deploy de producción**. 1.000 visitas ≈ 20 créditos; el límite real son ~15–20 deploys/mes |
+| **Netlify Personal / Pro** | — | US$ 9 (1.000 créditos) / US$ 20 (3.000 créditos) por mes, si hiciera falta |
+
+Los archivos del juego van de B2 al navegador sin pasar por Netlify, así que el gasto de Netlify no crece con el tamaño
+del juego. Una URL de bucket **público** (`CONTENT_BASE=https://f00x.backblazeb2.com/file/<bucket>/f1c/`) también funciona
+y es aún más simple, pero deja los archivos descargables por cualquiera: no se recomienda para contenido comercial.
+
+### Pruebas realizadas (14/11/2026, sin cuentas reales: B2 simulado con `tools/b2-local.mjs` + la función real)
+
+`tools/b2-local.mjs` imita la API nativa de B2 (bucket privado, tokens de descarga por prefijo, CORS, Range, subida).
+La función que se probó es el mismo archivo que despliega Netlify. Chromium con perfil vacío, `tools/net-test.mjs` con `B2=1`:
+
+| Prueba | Resultado |
 |---|---|
-| 1, caché vacía | 850 archivos de arranque (195 MB) en ~5 s, todos verificados, y arranque hasta la pantalla legal; el servidor de contenido registró 851 pedidos (manifiesto + 850), ninguno a demanda |
-| 2, manifiesto con todo "a demanda" y caché vacía | 561 archivos (57 MB) bajados uno a uno cuando el juego los abrió; llegó igual a la pantalla legal |
-| 3, misma caché con el manifiesto normal | sólo bajaron los 131 archivos de arranque que faltaban |
-| 4, mismo navegador otra vez | 0 descargas, arranque directo desde OPFS |
+| Herramientas: `b2-setup` → `b2-upload` (61 archivos) → `b2-upload` otra vez → `check-origin --boot` | bucket privado + CORS + clave restringida; 61 subidos; 2ª vez 0 subidos; 13/13 verificaciones OK; clave mala → 401 |
+| Sin clave | "Acceso restringido", B2 no entregó ningún archivo |
+| Con `?key=`, página cerrada a los 4 s | 91 de 195 MB bajados |
+| Reabrir sin `?key`, con cortes de conexión simulados (1 de cada 3 respuestas grandes) | retomó 8 MB a medias, bajó sólo los 179 archivos faltantes, superó 5 cortes, hashes OK, juego arrancado |
+| Todo "a demanda" (descargas síncronas mientras corre el juego), cortes 1 de cada 4 | 563 archivos bajados mientras el juego los abría (incluido uno de 8,4 MB en 2 rangos), 3 cortes superados, sin errores |
+| Segunda visita | sólo el manifiesto; 0 archivos del juego; arranque directo |
 
-### Preparar y publicar el contenido (sólo con autorización de EA/CMT)
+Ninguna corrida mostró el selector de carpeta. **No se probó todavía contra Backblaze y Netlify reales** (no hay acceso a las cuentas).
 
-```
-node tools/make-content.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido --copy
-#   contenido/manifest.json + contenido/files/<ruta>   (excluye Bink, plugins, zips, instaladores)
-rclone copy contenido r2:MI-BUCKET/f1c          # o: npx wrangler r2 object put … por archivo
-```
-
-- `tools/boot-files.json` define el grupo de arranque; se regenera con `node tools/boot-files.mjs <juego> tools/boot-files.json`
-  (corre el juego en Node desde el inicio hasta el menú y anota qué archivos abre).
-- **R2:** bucket con acceso público (dominio propio o `r2.dev`) y **CORS** para el dominio del sitio:
-  `[{"AllowedOrigins":["https://TU-SITIO.netlify.app"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":86400}]`.
-  El sitio usa COEP `require-corp`, así que el contenido debe llegar con CORS (o `Cross-Origin-Resource-Policy: cross-origin`).
-- **Conectar el sitio:** en Netlify (o Cloudflare Pages) definir la variable `CONTENT_BASE=https://TU-BUCKET/f1c/` y
-  volver a desplegar; `tools/build-web.mjs` escribe `config.json` y desde ahí el arranque es automático.
-  Para probar sin redeploy: `https://TU-SITIO/?content=https://TU-BUCKET/f1c/`. Para usar una copia propia: `?import`.
-- Prueba local: `node tools/make-content.mjs <juego> contenido` y `node tools/net-test.mjs contenido <juego>`
-  (sirve los archivos desde tu instalación, sin copiarlos ni publicarlos).
-
-### Acceso sólo para usuarios autorizados (R2 privado + Worker) — recomendado
-
-En vez de un bucket público, el bucket queda **privado** y un Worker (`cloudflare/content-worker.js`) lo sirve sólo a
-quien tenga una clave y sólo al dominio del sitio (CORS limitado a `ALLOWED_ORIGINS`, preflight, `Range`, caché inmutable).
-
-**Por qué hoy aparece el selector de carpeta:** el sitio sólo arranca solo si el build genera `dist/config.json`, y
-`tools/build-web.mjs` lo escribe únicamente cuando existe la variable `CONTENT_BASE` en el entorno de build de Netlify.
-Sin ella (o si se agregó después del último deploy) no hay `config.json` y el launcher cae al modo importación.
-Comprobar: `https://TU-SITIO.netlify.app/config.json` debe devolver `{"contentBase":"…"}` (si da 404, falta la variable o el redeploy).
-
-Pasos (una vez):
-
-1. Cloudflare → R2 → crear bucket `f1c-cmt` (privado). R2 → *Manage API tokens* → token **Object Read & Write** sobre ese bucket.
-2. Subir el contenido (sólo con autorización), directo desde la instalación, sin copiarla:
-   ```
-   set R2_ACCOUNT_ID=…  & set R2_ACCESS_KEY_ID=…  & set R2_SECRET_ACCESS_KEY=…
-   node tools/make-content.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido
-   node tools/r2-upload.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido\manifest.json f1c-cmt f1c
-   ```
-   (omite los objetos que ya están con el mismo SHA-256; sube el manifiesto al final)
-3. Worker: en `cloudflare/wrangler.toml` poner `ALLOWED_ORIGINS="https://TU-SITIO.netlify.app"`, luego
-   ```
-   cd cloudflare && npx wrangler login && npx wrangler deploy
-   npx wrangler secret put ACCESS_KEYS        # p. ej. clave-juan,clave-ana (una por persona, revocables)
-   ```
-4. Netlify → Site configuration → Environment variables → `CONTENT_BASE = https://f1c-content.TU-SUBDOMINIO.workers.dev/`
-   (scope *Builds*) → Deploys → *Trigger deploy* → *Clear cache and deploy site*.
-5. Verificar: `node tools/check-origin.mjs https://f1c-content.….workers.dev/ https://TU-SITIO.netlify.app CLAVE --boot`
-6. Enlace para cada usuario: `https://TU-SITIO.netlify.app/?key=CLAVE` (la clave queda guardada en el navegador;
-   sin clave el sitio pide una, nunca el selector de carpeta).
-
-Prueba local del flujo completo con el Worker real (R2 simulado, sin publicar nada):
-`ACCESS_KEYS=k ALLOWED_ORIGINS=http://localhost:8812 node tools/worker-local.mjs contenido <juego> 8901` y
-`WORKER=1 ACCESS_KEYS=k URL='http://localhost:8812/?key=k' node tools/net-test.mjs contenido <juego>`.
-Resultado (14/11/2026): sin clave → "Acceso restringido" y 0 archivos servidos; con clave, caché vacía → 850 archivos
-(195 MB) verificados en ~8 s y el juego arranca hasta la pantalla de título; segunda visita sin `?key` → sólo el
-manifiesto, 0 archivos del juego, arranque directo. En ningún caso apareció el selector de carpeta.
 
 ## Cambios respecto del núcleo de Daytona
 

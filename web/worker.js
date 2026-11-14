@@ -29,21 +29,22 @@ async function makeVfs(source) {
   post('log', { text: `[VFS] ${idx.files.length} archivos del juego (${(idx.bytes / 1073741824).toFixed(2)} GB), ${n} archivos guardados por el juego` });
   return vfs;
 }
-// Origen autorizado (R2/HTTPS): manifiesto + caché OPFS por hash; primero el grupo "boot", el resto bajo demanda.
+// Origen autorizado (Backblaze B2 privado vía /api/content-token, o HTTPS directo): manifiesto + caché OPFS por hash;
+// primero el grupo "boot", el resto bajo demanda.
 async function netVfs(source) {
-  const base = source.base.endsWith('/') ? source.base : source.base + '/';
-  const { NetCache } = await import('./netcache.js'); const P = await import('./pack.js');
-  post('status', { text: 'Leyendo el manifiesto de contenido…' });
+  const { NetCache, ContentOrigin } = await import('./netcache.js'); const P = await import('./pack.js');
+  const origin = new ContentOrigin(source);
+  post('status', { text: 'Conectando con el servidor de contenido…' });
   let man; const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('f1c-net', { create: true });
-  try { const r = await fetch(base + 'manifest.json', { cache: 'no-cache', headers: source.key ? { 'X-F1C-Key': source.key } : {} }); if (r.status === 401 || r.status === 403) { const e = new Error('CLAVE: ' + (await r.text())); e.auth = true; throw e; } if (!r.ok) throw new Error('HTTP ' + r.status); man = await r.json();
+  try { await origin.refresh(); const r = await fetch(origin.url('manifest.json'), { cache: 'no-cache' }); if (r.status === 401 || r.status === 403) { const e = new Error('CLAVE: el almacenamiento rechazó el acceso (HTTP ' + r.status + ')'); e.auth = true; throw e; } if (!r.ok) throw new Error('HTTP ' + r.status); man = await r.json();
     const w = await (await root.getFileHandle('manifest.json', { create: true })).createWritable(); await w.write(JSON.stringify(man)); await w.close(); }
-  catch (e) { if (e.auth) throw e; try { man = JSON.parse(await (await (await root.getFileHandle('manifest.json')).getFile()).text()); post('log', { text: `[NET] sin conexión al origen (${e.message}); se usa el manifiesto guardado` }); } catch { throw new Error(`No se pudo leer ${base}manifest.json: ${e.message}`); } }
+  catch (e) { if (e.auth) throw e; try { man = JSON.parse(await (await (await root.getFileHandle('manifest.json')).getFile()).text()); post('log', { text: `[NET] sin conexión al origen (${e.message}); se usa el manifiesto guardado` }); } catch { throw new Error(`No se pudo leer el manifiesto de contenido: ${e.message}`); } }
   if (man.format !== 'f1c-cmt-web/1') throw new Error('Manifiesto con formato desconocido');
-  const cache = await NetCache.open(base, (ev) => post('net', ev), source.key || '');
+  const cache = await NetCache.open(origin, (ev) => post('net', ev));
   const entries = man.files.map((f) => ({ path: f.p, size: f.s, h: f.h, g: f.g }));
   const boot = entries.filter((e) => e.g === 'boot'); const missing = boot.filter((e) => !cache.has(e.h));
   const have = entries.filter((e) => cache.has(e.h)).reduce((a, e) => a + e.size, 0);
-  post('log', { text: `[NET] contenido ${man.version}: ${entries.length} archivos (${(man.bytes / 1073741824).toFixed(2)} GB); en caché ${(have / 1048576).toFixed(0)} MB; faltan para arrancar ${missing.length} archivos` });
+  post('log', { text: `[NET] contenido ${man.version}: ${entries.length} archivos (${(man.bytes / 1073741824).toFixed(2)} GB); en caché ${(have / 1048576).toFixed(0)} MB${[...cache.index.values()].some((x) => x.length === 3) ? ` (+${([...cache.index.values()].filter((x) => x.length === 3).reduce((a, x) => a + x[2], 0) / 1048576).toFixed(0)} MB de descargas a medias que se retoman)` : ''}; faltan para arrancar ${missing.length} archivos` });
   if (missing.length) {
     post('status', { text: 'Descargando los archivos para arrancar…' });
     await cache.prefetch(missing, (p) => post('prefetch', p));
