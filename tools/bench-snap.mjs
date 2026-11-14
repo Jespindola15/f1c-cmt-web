@@ -5,6 +5,7 @@ import { DiskVFS } from './disk-vfs.mjs';
 const [GAME, SNAP, WARM = '600000000', SECS = '30'] = process.argv.slice(2);
 const emu = restore(SNAP, () => { const v = new DiskVFS(GAME); v.index.delete('OPH.DLL'); v.index.delete('VFXDRIVE.DLL'); return v; }, { log: () => {}, host: { deferPresent: true, present() {}, setMode() {}, setTitle() {}, audio: {} } });
 emu.traceApis = false; if (process.env.NAMES) emu.jitNames = true; if (process.env.HINTS) emu.regionHints = true; let frames = 0; emu.onPresent = () => frames++;
+emu.onPresent = () => frames++;
 if (process.env.ACCEL !== '0') { const { installAccel } = await import('../src/accel.js').catch(() => ({})); if (installAccel) console.log('aceleradores:', installAccel(emu)); }
 let t = Date.now(); emu.run(Number(WARM)); console.log(`calentamiento ${((Date.now() - t) / 1000).toFixed(1)}s`);
 const f0 = frames, i0 = emu.cpu.icount; t = Date.now(); const end = t + Number(SECS) * 1000;

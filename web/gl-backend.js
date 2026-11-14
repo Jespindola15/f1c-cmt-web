@@ -55,7 +55,7 @@ export class GLBackend {
     gl.useProgram(p); this.u = {}; for (const n of ['uRHW', 'uScreen', 'uWVP', 'uHasDiff', 'uTex0', 'uTex1', 'uHas0', 'uHas1', 'uC0', 'uA0', 'uC1', 'uA1', 'uTF', 'uAlphaFunc', 'uAlphaRef', 'uAlphaTest', 'uSw']) this.u[n] = gl.getUniformLocation(p, n);
     gl.uniform1i(this.u.uTex0, 0); gl.uniform1i(this.u.uTex1, 1);
     this.vbo = gl.createBuffer(); this.ibo = gl.createBuffer(); this.vao = gl.createVertexArray(); gl.bindVertexArray(this.vao);
-    this.texCache = new Map(); this.stats = { draws: 0, tris: 0, texUploads: 0, frames: 0, skipped: {} };
+    this.texCache = new Map(); this.rtFbo = new Map(); this.stats = { draws: 0, tris: 0, texUploads: 0, frames: 0, skipped: {} };
     this.white = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.white); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
   }
   // El juego dibuja en un framebuffer propio (el "back buffer"); Present lo copia al lienzo. Así el navegador
@@ -68,26 +68,46 @@ export class GLBackend {
     this.rbC = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, this.rbC); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
     this.rbZ = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, this.rbZ); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, this.rbC);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.rbZ);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.rbZ); this.cur = this.fbo;
   }
   clear(dev, fl, color, z, stencil) {
     if (this.noDraw) return;
-    const gl = this.gl; this.size(dev.backbuffer.w, dev.backbuffer.h);
-    const v = dev.viewport; gl.enable(gl.SCISSOR_TEST); gl.scissor(v[0], dev.backbuffer.h - v[1] - v[3], v[2], v[3]); let bits = 0;
+    const gl = this.gl; const [, TH] = this.bindTarget(dev);
+    const v = dev.viewport; gl.enable(gl.SCISSOR_TEST); gl.scissor(v[0], TH - v[1] - v[3], v[2], v[3]); let bits = 0;
     if (fl & 1) { gl.clearColor(((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, ((color >>> 24) & 255) / 255); bits |= gl.COLOR_BUFFER_BIT; }
     if (fl & 2) { gl.depthMask(true); gl.clearDepth(z); bits |= gl.DEPTH_BUFFER_BIT; }
     if (fl & 4) { gl.clearStencil(stencil); bits |= gl.STENCIL_BUFFER_BIT; }
     gl.colorMask(true, true, true, true); if (bits) gl.clear(bits); gl.disable(gl.SCISSOR_TEST);
+  }
+  released(o) { const t = this.texCache.get(o); if (t) { this.gl.deleteTexture(t); this.texCache.delete(o); } }
+  // Destino de dibujo: back buffer (FBO propio) o un nivel de textura (render-to-texture: espejos, reflejos).
+  bindTarget(dev) {
+    const gl = this.gl, rt = dev.rt, bb = dev.backbuffer;
+    if (!rt || rt === bb || rt.kind === 'backbuffer') { this.size(bb.w, bb.h); if (this.cur !== this.fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo); this.cur = this.fbo; } return [bb.w, bb.h]; }
+    let f = this.rtFbo.get(rt);
+    if (!f) {
+      f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      if (rt.container) { const t = this.textureObj(rt.container); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, rt.level || 0); rt.container.gpu = true; t.swz = 0; }
+      else { const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, rt.w, rt.h); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb); }
+      const zb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, zb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, rt.w, rt.h);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, zb);
+      this.rtFbo.set(rt, f); this.cur = f;
+    }
+    if (this.cur !== f) { gl.bindFramebuffer(gl.FRAMEBUFFER, f); this.cur = f; }
+    return [rt.w, rt.h];
   }
   present(dev) { const T0 = performance.now(); if (this.noDraw) this.stats.frames++; else this.present_(dev); if (this.timing) this.gl.finish(); this.stats.presentMs = (this.stats.presentMs || 0) + performance.now() - T0; }
   present_(dev) {
     const gl = this.gl; this.size(dev.backbuffer.w, dev.backbuffer.h); this.stats.frames++;
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
     gl.disable(gl.SCISSOR_TEST); gl.blitFramebuffer(0, 0, this.fbW, this.fbH, 0, 0, this.fbW, this.fbH, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo); this.cur = this.fbo;
   }
   texture(id) {
     const o = this.emu.d3d.objs.get(id); if (!o || o.kind !== 'texture') return null;
+    return this.textureObj(o);
+  }
+  textureObj(o) {
     let t = this.texCache.get(o); const gl = this.gl;
     if (!t) { t = gl.createTexture(); this.texCache.set(o, t); o.dirty = true; }
     if (o.dirty) { this.upload(t, o); o.dirty = false; this.stats.texUploads++; }
@@ -123,7 +143,7 @@ export class GLBackend {
   }
   draw(dev, kind, a) { if (this.noDraw) { this.stats.draws++; return; } const T0 = performance.now(); try { return this.draw_(dev, kind, a); } finally { if (this.timing) this.gl.finish(); this.stats.drawMs = (this.stats.drawMs || 0) + performance.now() - T0; } }
   draw_(dev, kind, a) {
-    const gl = this.gl, e = this.emu, m = e.mem.u8; this.size(dev.backbuffer.w, dev.backbuffer.h);
+    const gl = this.gl, e = this.emu, m = e.mem.u8; const [TW, TH] = this.bindTarget(dev);
     if (dev.vs >= 0x10000) { this.stats.skipped.vshader = (this.stats.skipped.vshader || 0) + 1; return; } // vertex shaders: pendiente
     const fvf = dev.vs; const L = layout(fvf); if (!L) { this.stats.skipped['fvf' + fvf.toString(16)] = 1; return; }
     const type = a.type; const nv = vcount(type, a.count); if (!nv) return;
@@ -144,7 +164,7 @@ export class GLBackend {
     if (L.spec >= 0) { gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, stride, L.spec); } else { gl.disableVertexAttribArray(2); gl.vertexAttrib4f(2, 0, 0, 0, 0); }
     for (let k = 0; k < 2; k++) { const ti = dev.tss[k].get(TSS.TEXCOORDINDEX) ?? k; const off = L.tex[ti & 7];
       if (off !== undefined) { gl.enableVertexAttribArray(3 + k); gl.vertexAttribPointer(3 + k, 2, gl.FLOAT, false, stride, off); } else { gl.disableVertexAttribArray(3 + k); gl.vertexAttrib2f(3 + k, 0, 0); } }
-    const u = this.u; gl.uniform1i(u.uRHW, L.rhw ? 1 : 0); gl.uniform4f(u.uScreen, dev.backbuffer.w, dev.backbuffer.h, 0, 0); gl.uniform1i(u.uHasDiff, L.diff >= 0 ? 1 : 0);
+    const u = this.u; gl.uniform1i(u.uRHW, L.rhw ? 1 : 0); gl.uniform4f(u.uScreen, TW, TH, 0, 0); gl.uniform1i(u.uHasDiff, L.diff >= 0 ? 1 : 0);
     if (!L.rhw) gl.uniformMatrix4fv(u.uWVP, false, wvp(dev));
     const sw = [0, 0];
     for (let k = 0; k < 2; k++) { const ts = dev.tss[k]; const C = [ts.get(TSS.COLOROP) ?? (k === 0 ? 4 : 1), ts.get(TSS.COLORARG1) ?? 2, ts.get(TSS.COLORARG2) ?? 1];
@@ -155,7 +175,7 @@ export class GLBackend {
     gl.uniform2i(u.uSw, sw[0], sw[1]);
     const tf = dev.rs.get(RS.TEXTUREFACTOR) ?? 0xffffffff; gl.uniform4f(u.uTF, ((tf >> 16) & 255) / 255, ((tf >> 8) & 255) / 255, (tf & 255) / 255, ((tf >>> 24) & 255) / 255);
     gl.uniform1i(u.uAlphaTest, dev.rs.get(RS.ALPHATESTENABLE) ? 1 : 0); gl.uniform1i(u.uAlphaFunc, dev.rs.get(RS.ALPHAFUNC) ?? 8); gl.uniform1f(u.uAlphaRef, dev.rs.get(RS.ALPHAREF) ?? 0);
-    this.state(dev);
+    this.state(dev, TH);
     const prim = [0, gl.POINTS, gl.LINES, gl.LINE_STRIP, gl.TRIANGLES, gl.TRIANGLE_STRIP, gl.TRIANGLE_FAN][type];
     if (indices) { gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STREAM_DRAW); gl.drawElements(prim, nv, idx32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0); }
     else gl.drawArrays(prim, 0, nv);
@@ -164,14 +184,14 @@ export class GLBackend {
       const t0 = dev.tex[0] && this.emu.d3d.objs.get(dev.tex[0]); let tsum = 0; if (t0) { const sf = t0.surfaces[0]; for (let i = 0; i < sf.size; i += 4093) tsum += m[sf.mem + i]; }
       this.probe.push({ tinfo: t0 && { w: t0.w, h: t0.h, lv: t0.surfaces.length, fmt: t0.fmt, tsum }, kind, a, fvf: fvf.toString(16), stride, L, rs: [...dev.rs], tss0: [...dev.tss[0]], tss1: [...dev.tss[1]], tex: dev.tex.slice(0, 2), vp: dev.viewport, vtx: [...f].map((x) => +x.toFixed(3)), px: [...px], err: gl.getError(), fbo: gl.checkFramebufferStatus(gl.FRAMEBUFFER) }); }
   }
-  state(dev) {
+  state(dev, TH) {
     const gl = this.gl, rs = dev.rs; const B = [0, gl.ZERO, gl.ONE, gl.SRC_COLOR, gl.ONE_MINUS_SRC_COLOR, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.DST_ALPHA, gl.ONE_MINUS_DST_ALPHA, gl.DST_COLOR, gl.ONE_MINUS_DST_COLOR, gl.SRC_ALPHA_SATURATE];
     if (rs.get(RS.ALPHABLENDENABLE)) { gl.enable(gl.BLEND); gl.blendFunc(B[rs.get(RS.SRCBLEND) ?? 2] || gl.ONE, B[rs.get(RS.DESTBLEND) ?? 1] || gl.ZERO); } else gl.disable(gl.BLEND);
     const Z = [0, gl.NEVER, gl.LESS, gl.EQUAL, gl.LEQUAL, gl.GREATER, gl.NOTEQUAL, gl.GEQUAL, gl.ALWAYS];
     if (rs.get(RS.ZENABLE) ?? 1) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(Z[rs.get(RS.ZFUNC) ?? 4] || gl.LEQUAL); } else gl.disable(gl.DEPTH_TEST);
     gl.depthMask(!!(rs.get(RS.ZWRITEENABLE) ?? 1));
     const cull = rs.get(RS.CULLMODE) ?? 3; if (cull === 1) gl.disable(gl.CULL_FACE); else { gl.enable(gl.CULL_FACE); gl.frontFace(gl.CCW); gl.cullFace(cull === 3 ? gl.FRONT : gl.BACK); }
-    const v = dev.viewport; gl.viewport(v[0], dev.backbuffer.h - v[1] - v[3], v[2], v[3]); gl.depthRange(v[4], v[5]);
+    const v = dev.viewport; gl.viewport(v[0], TH - v[1] - v[3], v[2], v[3]); gl.depthRange(v[4], v[5]);
   }
 }
 function layout(f) {

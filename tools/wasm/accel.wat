@@ -1,6 +1,6 @@
 ;; Rutinas SIMD sobre la memoria emulada (importada). Se compila con tools/wasm/build.mjs -> src/wasm-accel.js
 (module
-  (import "e" "mem" (memory 16384 16384))
+  (import "e" "mem" (memory 32768 32768))
   ;; blitKey: copia píxeles de 32 bits cuyo valor != key (fila a fila); devuelve cuántos se escribieron
   (func (export "blitKey") (param $s i32) (param $sp i32) (param $d i32) (param $dp i32) (param $w i32) (param $h i32) (param $key i32) (result i32)
     (local $x i32) (local $v i32) (local $kv v128) (local $a v128) (local $m v128) (local $eq v128) (local $n4 i32) (local $writes i32) (local $si i32) (local $di i32) (local $vp i32)

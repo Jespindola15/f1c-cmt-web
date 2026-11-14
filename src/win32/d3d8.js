@@ -44,7 +44,7 @@ function makeCom(emu, iface, methods, state) {
 const unk = (extra = {}) => [
   ['QueryInterface', 2, (e, o, self, riid, pp) => { e.mem.w32(pp, self); o.refs++; return D3D_OK; }],
   ['AddRef', 0, (e, o) => ++o.refs],
-  ['Release', 0, (e, o, self) => { o.refs--; if (o.refs <= 0) { e.d3d.release?.(o); } return Math.max(0, o.refs); }],
+  ['Release', 0, (e, o, self) => { o.refs--; if (o.refs <= 0 || (o.container?.dead && o.refs <= 1)) releaseObj(e, o); return Math.max(0, o.refs); }],
 ];
 const resource = () => [
   ['GetDevice', 1, (e, o, self, pp) => { e.mem.w32(pp, e.d3d.device.addr); e.d3d.device.refs++; }],
@@ -66,6 +66,26 @@ function surfaceMethods() {
     ['UnlockRect', 0, (e2, o) => { o.dirty = true; if (o.container) o.container.dirty = true; e2.d3dBackend?.surfaceChanged?.(o); }],
   ];
 }
+// Liberación de recursos al llegar a 0 referencias (antes quedaban vivos para siempre: la pista agotaba la memoria).
+// Si el recurso sigue enlazado al dispositivo (SetTexture/SetStreamSource/SetIndices/SetRenderTarget), se libera
+// cuando se desenlaza, como hace Direct3D (el dispositivo mantiene su propia referencia).
+function isBound(e, o) {
+  const d = e.d3d.device; if (!d || !o.addr) return false; const a = o.addr;
+  if (d.tex.includes(a) || d.indices === a || d.streams.some((x) => x && x.vb === a)) return true;
+  if (d.rt === o || d.zs === o) return true;
+  return false;
+}
+function releaseObj(e, o) {
+  if (o.freed) return;
+  if (o.container && !o.container.dead) return; // nivel de una textura viva
+  if (isBound(e, o)) { o.pendingRelease = true; return; }
+  if (o.kind === 'texture') {
+    o.dead = true;
+    for (const sf of o.surfaces) if (sf.refs <= 1 && !sf.freed) { if (sf.mem) e.mem.free(sf.mem); sf.freed = true; }
+  } else if (o.mem && (o.kind === 'vb' || o.kind === 'ib' || o.size)) e.mem.free(o.mem);
+  o.freed = true; e.d3dBackend?.released?.(o);
+}
+function unbind(e, addr) { const o = addr && e.d3d.objs.get(addr); if (o && o.pendingRelease && !isBound(e, o)) { o.pendingRelease = false; releaseObj(e, o); } }
 function newSurface(e, w, h, fmt, usage, pool, kind, container) {
   const sz = surfSize(fmt, w, h);
   if (!sz) throw new HaltSignal(`Formato de superficie no soportado: ${FMT[fmt] || '0x' + fmt.toString(16)} (${w}x${h})`);
@@ -160,7 +180,7 @@ export function deviceMethods() {
       if (a?.surfaces && b?.surfaces) { const off = Math.max(0, a.surfaces.length - b.surfaces.length); b.surfaces.forEach((d, i) => { const sf = a.surfaces[i + off]; if (sf) copySurf(e2, sf, d, 0, 0, sf.w, sf.h, 0, 0); }); b.dirty = true; }
       B(e2)?.updateTexture?.(a, b); }],
     ['GetFrontBuffer', 1, () => D3D_OK],
-    ['SetRenderTarget', 2, (e2, o, self, rt, zs) => { if (rt) o.rt = e2.d3d.objs.get(rt); o.zs = zs ? e2.d3d.objs.get(zs) : null; B(e2)?.setRenderTarget?.(o); }],
+    ['SetRenderTarget', 2, (e2, o, self, rt, zs) => { const ort = o.rt, ozs = o.zs; if (rt) o.rt = e2.d3d.objs.get(rt); o.zs = zs ? e2.d3d.objs.get(zs) : null; B(e2)?.setRenderTarget?.(o); for (const x of [ort, ozs]) if (x && x !== o.rt && x !== o.zs) unbind(e2, x.addr); }],
     ['GetRenderTarget', 1, (e2, o, self, pp) => { e2.mem.w32(pp, o.rt.addr); o.rt.refs++; }],
     ['GetDepthStencilSurface', 1, (e2, o, self, pp) => { if (!o.zs) return D3DERR_NOTAVAILABLE; e2.mem.w32(pp, o.zs.addr); o.zs.refs++; }],
     ['BeginScene', 0, (e2, o) => { o.inScene = true; B(e2)?.beginScene?.(o); }], ['EndScene', 0, (e2, o) => { o.inScene = false; }],
@@ -185,7 +205,7 @@ export function deviceMethods() {
     ['CreateStateBlock', 2, (e2, o, self, type, p) => { const id = ++o.sbSeq; o.stateBlocks.set(id, {}); e2.mem.w32(p, id); }],
     ['SetClipStatus', 1, () => D3D_OK], ['GetClipStatus', 1, (e2, o, self, p) => { e2.mem.w32(p, 0); e2.mem.w32(p + 4, 0); }],
     ['GetTexture', 2, (e2, o, self, st, pp) => { const t = o.tex[st]; e2.mem.w32(pp, t || 0); if (t) e2.d3d.objs.get(t).refs++; }],
-    ['SetTexture', 2, (e2, o, self, st, t) => { o.tex[st] = t; S(e2).setTex++; }],
+    ['SetTexture', 2, (e2, o, self, st, t) => { const old = o.tex[st]; o.tex[st] = t; S(e2).setTex++; if (old && old !== t) unbind(e2, old); }],
     ['GetTextureStageState', 3, (e2, o, self, st, k, p) => { e2.mem.w32(p, o.tss[st].get(k) ?? 0); }],
     ['SetTextureStageState', 3, (e2, o, self, st, k, v) => { o.tss[st].set(k, v); }],
     ['ValidateDevice', 1, (e2, o, self, p) => { e2.mem.w32(p, 1); }], ['GetInfo', 3, () => 1],
@@ -205,9 +225,9 @@ export function deviceMethods() {
     ['SetVertexShaderConstant', 3, (e2, o, self, reg, p, n) => { for (let i = 0; i < n * 4; i++) o.vsConst[reg * 4 + i] = e2.mem.dv.getFloat32(p + 4 * i, true); }],
     ['GetVertexShaderConstant', 3, (e2, o, self, reg, p, n) => { for (let i = 0; i < n * 4; i++) e2.mem.dv.setFloat32(p + 4 * i, o.vsConst[reg * 4 + i], true); }],
     ['GetVertexShaderDeclaration', 3, null], ['GetVertexShaderFunction', 3, null],
-    ['SetStreamSource', 3, (e2, o, self, n, vb, stride) => { o.streams[n] = { vb, stride }; }],
+    ['SetStreamSource', 3, (e2, o, self, n, vb, stride) => { const old = o.streams[n]?.vb; o.streams[n] = { vb, stride }; if (old && old !== vb) unbind(e2, old); }],
     ['GetStreamSource', 3, (e2, o, self, n, pp, ps) => { const s = o.streams[n] || { vb: 0, stride: 0 }; e2.mem.w32(pp, s.vb); e2.mem.w32(ps, s.stride); if (s.vb) e2.d3d.objs.get(s.vb).refs++; }],
-    ['SetIndices', 2, (e2, o, self, ib, base) => { o.indices = ib; o.baseIndex = base; }],
+    ['SetIndices', 2, (e2, o, self, ib, base) => { const old = o.indices; o.indices = ib; o.baseIndex = base; if (old && old !== ib) unbind(e2, old); }],
     ['GetIndices', 2, (e2, o, self, pp, pb) => { e2.mem.w32(pp, o.indices); e2.mem.w32(pb, o.baseIndex); if (o.indices) e2.d3d.objs.get(o.indices).refs++; }],
     ['CreatePixelShader', 2, (e2, o, self, fn, ph) => { const f = []; for (let p = fn; ; p += 4) { const t = e2.mem.r32(p); f.push(t); if (t === 0x0000ffff || f.length > 4096) break; }
       const h = 0x20000 + (++o.shaderSeq); o.shaders.set(h, { ps: f }); e2.mem.w32(ph, h); S(e2).pshaders++; e2.log('D3D', `CreatePixelShader ps ${(f[0] >> 8) & 255}.${f[0] & 255}, ${f.length} tokens`); }],

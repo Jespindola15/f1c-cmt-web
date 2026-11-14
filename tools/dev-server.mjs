@@ -23,7 +23,8 @@ http.createServer((req, res) => {
   try {
     if (url === '/game/manifest.json') { man ??= manifest(); res.writeHead(200, { ...H, 'Content-Type': 'application/json' }); return res.end(JSON.stringify(man)); }
     let file;
-    if (url.startsWith('/snap/') && SNAP) { file = path.join(SNAP, url.slice(6)); if (!file.startsWith(SNAP)) throw new Error('ruta'); }
+    if (url.startsWith('/cap/') && process.env.CAP) { const C = path.resolve(process.env.CAP); file = path.join(C, url.slice(5)); if (!file.startsWith(C)) throw new Error('ruta'); }
+    else if (url.startsWith('/snap/') && SNAP) { file = path.join(SNAP, url.slice(6)); if (!file.startsWith(SNAP)) throw new Error('ruta'); }
     else if (url.startsWith('/game/')) { file = path.join(GAME, url.slice(6)); if (!file.startsWith(GAME)) throw new Error('ruta'); }
     else { file = path.join(ROOT, url === '/' ? 'web/index.html' : url); if (!file.startsWith(ROOT)) throw new Error('ruta'); }
     const st = fs.statSync(file); if (!st.isFile()) throw new Error('no es archivo');

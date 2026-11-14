@@ -42,3 +42,19 @@ console.log(`blit32: ${n - fails}/${n} idénticos (aceleradores: ${ACCELS.map((a
   }
   console.log(`transformaciones x87: ${cnt - bad}/${cnt} idénticos`);
 }
+
+// ---- swap del qsort ----
+{
+  const BASE = 0x23000000; let bad = 0, cnt = 0;
+  for (let t = 0; t < 500; t++) {
+    const w = [0, 1, 3, 4, 16, 40, 100][rnd() % 7], a = BASE + (rnd() % 256), b = rnd() % 4 === 0 ? a : BASE + (rnd() % 256), regs = Array.from({ length: 8 }, () => rnd());
+    const res = [];
+    for (const e of [A, B]) { const m = e.mem; for (let i = 0; i < 512; i++) m.w8(BASE + i, (i * 37 + t) & 255);
+      const save = [...e.cpu.r]; for (const i of [0, 1, 2, 3, 5, 6, 7]) e.cpu.r[i] = regs[i]; const sp0 = e.cpu.r[4];
+      const i0 = e.cpu.icount; e.callGuest(0x58924c, [a, b, w]); const di = e.cpu.icount - i0;
+      let h = 0; for (let i = 0; i < 512; i++) h = (Math.imul(h, 31) + m.r8(BASE + i)) >>> 0; let hs = 0; for (let i = -32; i < 16; i += 4) hs = (Math.imul(hs, 31) + m.r32(sp0 + i)) >>> 0;
+      res.push([h, hs, [...e.cpu.r].join(':'), di].join('|')); e.cpu.r.set(save); }
+    cnt++; if (res[0] !== res[1]) { if (bad++ < 4) console.log('DIFERENCIA swap', { w, a, b }, '\n', res[0], '\n', res[1]); }
+  }
+  console.log(`qsort swap: ${cnt - bad}/${cnt} idénticos`);
+}

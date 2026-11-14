@@ -6,7 +6,7 @@
 //   0x02000000+ DLLs cargadas por LoadLibrary (con relocación)
 //   0x03000000  heap (HeapAlloc/VirtualAlloc/GlobalAlloc/superficies DirectDraw)
 //   0x0F000000-0x0FFF0000 pila del hilo principal
-export const MEM_SIZE = 0x40000000; // 1 GiB (F1C CMT: texturas y pistas)
+export const MEM_SIZE = 0x80000000; // 2 GiB = espacio de usuario de Win32 (F1C CMT: pistas con texturas)
 export const TEB_ADDR = 0x00010000;
 export const PEB_ADDR = 0x00011000;
 export const SYS_ADDR = 0x00012000; // strings del sistema (cmdline, env, etc.)
@@ -16,6 +16,8 @@ export const HOST_RETURN = THUNK_END - 4; // dirección mágica: vuelta de callb
 export const DLL_BASE = 0x02000000;
 export const HEAP_BASE = 0x03000000;
 export const HEAP_END = 0x3f000000;
+// segundo tramo del heap, por encima de la pila (la pila del hilo principal queda en 0x3f800000-0x3fff0000)
+export const HEAP2_BASE = 0x40000000, HEAP2_END = 0x7f000000;
 export const STACK_TOP = 0x3fff0000;
 export const STACK_SIZE = 0x00800000;
 
@@ -26,7 +28,7 @@ export class MemFault extends Error {
 export class Memory {
   constructor(size = MEM_SIZE) {
     // Memoria de WebAssembly (si existe) para que las rutinas SIMD de accel.js trabajen sobre ella sin copias
-    if (typeof WebAssembly !== 'undefined' && size === 0x40000000) { this.wasmMem = new WebAssembly.Memory({ initial: size >>> 16, maximum: size >>> 16 }); this.buf = this.wasmMem.buffer; }
+    if (typeof WebAssembly !== 'undefined' && size >= 0x40000000) { this.wasmMem = new WebAssembly.Memory({ initial: size >>> 16, maximum: size >>> 16 }); this.buf = this.wasmMem.buffer; }
     else this.buf = new ArrayBuffer(size);
     this.u8 = new Uint8Array(this.buf);
     this.dv = new DataView(this.buf);
@@ -35,7 +37,7 @@ export class Memory {
     this.size = size;
     this.heapPtr = HEAP_BASE;
     this.blocks = new Map(); // addr -> size (para HeapSize/ReAlloc)
-    this.freeList = new Map(); // size -> [addr]
+    this.freeBlocks = new Map(); // addr -> tamaño (bloques libres)
     // vigilancia de escrituras en un rango (la usa el reescalado 3D para saber quién pintó cada píxel)
     this.watchLo = 0; this.watchHi = 0; this.onWatch = null;
   }
@@ -94,27 +96,48 @@ export class Memory {
   fill(a, v, n) { this.chk(a, n, 'escritura'); if (a < this.watchHi && a + n > this.watchLo) this.onWatch(a, n); this.cw(a, n); this.u8.fill(v, a, a + n); this.pw(a, n); }
   copy(dst, src, n) { this.chk(dst, n, 'escritura'); if (dst < this.watchHi && dst + n > this.watchLo) this.onWatch(dst, n); this.cw(dst, n); this.chk(src, n, 'lectura'); this.u8.copyWithin(dst, src, src + n); this.pw(dst, n); }
 
-  // Asignador simple: bump + listas libres por tamaño exacto (alineado a 16)
+  // Asignador: bump + bloques libres con fusión de vecinos y bins por potencia de 2 (determinista).
+  // freeBlocks: addr -> tamaño (se guarda en las instantáneas); bins/freeEnd se reconstruyen.
+  binOf(n) { return 31 - Math.clz32(n); }
+  ensureFree() {
+    if (this.bins) return;
+    this.bins = Array.from({ length: 32 }, () => new Set()); this.freeEnd = new Map();
+    if (!this.freeBlocks) this.freeBlocks = new Map();
+    if (this.freeList) { const old = this.freeList; this.freeList = undefined; for (const [n, l] of old) for (const a of l) this.addFree(a, n); } // formato viejo
+    else { const fb = this.freeBlocks; this.freeBlocks = new Map(); for (const [a, n] of fb) this.addFree(a, n); }
+  }
+  addFree(a, n) {
+    // fusionar con el bloque libre anterior y el siguiente
+    const prev = this.freeEnd.get(a); if (prev !== undefined) { const pn = this.freeBlocks.get(prev); this.removeFree(prev, pn); a = prev; n += pn; }
+    const nn = this.freeBlocks.get(a + n); if (nn !== undefined) { this.removeFree(a + n, nn); n += nn; }
+    if (a + n === this.heapPtr) { this.heapPtr = a; return; } // vuelve al tope
+    this.freeBlocks.set(a, n); this.freeEnd.set(a + n, a); this.bins[this.binOf(n)].add(a);
+  }
+  removeFree(a, n) { this.freeBlocks.delete(a); this.freeEnd.delete(a + n); this.bins[this.binOf(n)].delete(a); }
   alloc(n, zero = true) {
     n = Math.max(16, (n + 15) & ~15);
-    const fl = this.freeList.get(n);
-    let a;
-    if (fl && fl.length) a = fl.pop();
-    else {
+    this.ensureFree();
+    let a = -1;
+    for (let b = this.binOf(n); b < 32 && a < 0; b++) {
+      const bin = this.bins[b]; if (!bin.size) continue;
+      for (const x of bin) { const sz = this.freeBlocks.get(x); if (sz >= n) { a = x; this.removeFree(x, sz); if (sz > n) this.addFree(x + n, sz - n); break; } }
+    }
+    if (a < 0) {
       a = this.heapPtr;
-      if (a + n > HEAP_END) throw new Error(`Heap agotado (pedido ${n} bytes)`);
+      if (a < HEAP2_BASE && a + n > HEAP_END && this.size >= HEAP2_END) { const gap = HEAP_END - a; this.heapPtr = HEAP2_BASE; if (gap >= 16) { this.freeBlocks.set(a, gap); this.freeEnd.set(a + gap, a); this.bins[this.binOf(gap)].add(a); } a = this.heapPtr; } // salto al segundo tramo (el resto queda libre)
+      if (a + n > (a >= HEAP2_BASE ? HEAP2_END : HEAP_END)) throw new Error(`Heap agotado (pedido ${n} bytes; en uso ${((this.heapPtr - HEAP_BASE) / 1048576).toFixed(0)} MB, libres ${(this.freeBytes() / 1048576).toFixed(0)} MB)`);
       this.heapPtr += n;
     }
     this.blocks.set(a, n);
     if (zero) this.u8.fill(0, a, a + n);
     return a;
   }
+  freeBytes() { let t = 0; for (const n of this.freeBlocks.values()) t += n; return t; }
   free(a) {
     const n = this.blocks.get(a);
     if (!n) return false;
     this.blocks.delete(a);
-    if (!this.freeList.has(n)) this.freeList.set(n, []);
-    this.freeList.get(n).push(a);
+    this.ensureFree(); this.addFree(a, n);
     return true;
   }
   blockSize(a) { return this.blocks.get(a) ?? -1; }

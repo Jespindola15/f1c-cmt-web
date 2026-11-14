@@ -17,11 +17,20 @@ async function fetchBin(url, label) {
 async function start({ canvas, snap, opts = {} }) {
   post('status', { text: 'Leyendo índice de archivos del juego…' });
   const manifest = await (await fetch('/game/manifest.json')).json();
-  const state = await fetchBin(`/snap/${snap}/state.bin`, 'estado'); const mem = await fetchBin(`/snap/${snap}/mem.bin`, 'memoria');
+  const state = await fetchBin(`/snap/${snap}/state.bin`, 'estado');
+  // memoria: formato nuevo en trozos comprimidos (index.json + mem.NNN.z, zlib) o mem.bin plano
+  const idx = await fetch(`/snap/${snap}/index.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const mem = idx ? [] : await fetchBin(`/snap/${snap}/mem.bin`, 'memoria');
   post('status', { text: 'Restaurando la máquina x86…' });
   const host = { deferPresent: true, present() {}, setMode() {}, setTitle: (t) => post('title', { text: t }), messageBox: (c, t) => post('log', { text: `[MSGBOX] ${t}: ${c}` }) };
   emu = restore({ state, mem }, () => new HttpVFS('/game/', manifest), { log, host });
   emu.traceApis = false; emu.logFiles = false;
+  if (idx) for (let i = 0; i < idx.chunks; i++) {
+    post('progress', { label: `memoria ${i + 1}/${idx.chunks}`, got: i, total: idx.chunks });
+    const r = await fetch(`/snap/${snap}/mem.${String(i).padStart(3, '0')}.z`);
+    const ch = new Uint8Array(await new Response(r.body.pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+    const dv = new DataView(ch.buffer); for (let o = 0; o < ch.length; o += 4100) emu.mem.u8.set(ch.subarray(o + 4, o + 4100), dv.getUint32(o, true));
+  }
   // Pasa del reloj virtual (el de las pruebas en Node) al reloj real sin saltos hacia atrás.
   const vnow = emu.nowMs(); emu.clockMode = 'real'; emu.timeOffset = vnow - performance.now(); emu.qpcTurboMs = 0;
   emu.keys = new Uint8Array(256);

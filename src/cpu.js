@@ -367,6 +367,8 @@ export class CPU {
     }
   }
 
+  // ayudante del JIT: instrucción de cadena con prefijo rep (sin segmento)
+  strJ(kind, sz, rep) { this.rep = rep; this.segBase = 0; this.strop(kind, sz); this.rep = 0; }
   strop(kind, sz) {
     const r = this.r, mem = this.mem;
     const step = this.df ? -sz : sz;
@@ -375,7 +377,10 @@ export class CPU {
     // ruta rápida: rep movsb/movsd y rep stos hacia adelante
     if (rep && !this.df && (kind === 'movs' || kind === 'stos')) {
       const n = r[ECX] * sz;
-      if (kind === 'movs') mem.copy(r[EDI], r[ESI] + this.segBase, n), r[ESI] += n;
+      if (kind === 'movs') { const sa = (r[ESI] + this.segBase) >>> 0, da = r[EDI];
+        // solapado con destino adelante: rep movs real repite el patrón (copia elemento a elemento hacia adelante)
+        if (da > sa && da < sa + n) { for (let i = 0; i < r[ECX]; i++) this.wr(sz, da + i * sz, this.rd(sz, sa + i * sz)); } else mem.copy(da, sa, n);
+        r[ESI] += n; }
       else if (sz === 1) mem.fill(r[EDI], r[EAX] & 0xff, n);
       else for (let i = 0; i < r[ECX]; i++) this.wr(sz, r[EDI] + i * sz, r[EAX]);
       r[EDI] += n; r[ECX] = 0; return;

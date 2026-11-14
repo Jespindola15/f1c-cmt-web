@@ -52,9 +52,9 @@ const BLIT32 = { addr: 0x560a82, sig: hex('55 8b ec 56 57 60 fc 8b 45 20 c7 05 4
 // Se reproduce la misma secuencia de operaciones x87 sobre la FPU emulada (mismo orden de sumas, mismos
 // valores residuales en la pila) y las mismas escrituras en la pila del programa.
 // Lectura/escritura de float32 sin cierres (rápidas en el caso alineado)
-function rf(m, a) { return (a & 3) === 0 && a >= 4096 && a < 1073741824 ? m.f32a[a >>> 2] : m.f32(a); }
-function wf(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 1073741824 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.f32a[a >>> 2] = v; else m.wf32(a, v); }
-function w32(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 1073741824 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.u32[a >>> 2] = v; else m.w32(a, v); }
+function rf(m, a) { return (a & 3) === 0 && a >= 4096 && a < 2147483648 ? m.f32a[a >>> 2] : m.f32(a); }
+function wf(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 2147483648 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.f32a[a >>> 2] = v; else m.wf32(a, v); }
+function w32(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 2147483648 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.u32[a >>> 2] = v; else m.w32(a, v); }
 function x87Transform(emu, v, out, M, coord) {
   const f = emu.cpu.fpu, m = emu.mem, ST = f.st, TG = f.tagEmpty;
   const V0 = rf(m, v), V1 = rf(m, v + 4), V2 = rf(m, v + 8);
@@ -89,9 +89,30 @@ const XCOORD = { addr: 0x55eeaf, sig: XSIG(''), name: 'TransformCoord x87', fn: 
 const WNORM = { addr: 0x53bea0, sig: hex('8b 44 24 10 8b 4c 24 0c 8b 54 24 08 50 51 52 e8 70 30 02 00 83 c4 0c c3'), name: 'envoltorio TransformNormal', fn: xformWrapper(false, 0x53beb4, 48 + 9) };
 const WCOORD = { addr: 0x53bec0, sig: hex('8b 44 24 10 8b 4c 24 0c 8b 54 24 08 50 51 52 e8 db 2f 02 00 83 c4 0c c3'), name: 'envoltorio TransformCoord', fn: xformWrapper(true, 0x53bed4, 55 + 9) };
 
+// 0x58924c: swap(a, b, ancho) del qsort de la CRT (intercambio byte a byte). Usado al ordenar en la carga de
+// pistas (generación del .HAT). Registros finales y escrituras de pila idénticos a la rutina original.
+const QSWAP = { addr: 0x58924c, sig: hex('8b 44 24 04 8b 4c 24 08 3b c1 56 74 1d 8b 54 24 10 8b f2 4a 85 f6 74 12 53 8d 72 01 8a 19 8a 10 88 18 40 88 11 41 4e 75 f3 5b 5e c3'), name: 'qsort swap (CRT)',
+  fn(emu) {
+    const c = emu.cpu, m = emu.mem, r = c.r, sp = r[4];
+    const a = m.r32(sp + 4), b = m.r32(sp + 8), w = m.r32(sp + 12);
+    w32(m, sp - 4, r[6]); // push esi
+    if (a === b) { r[0] = a; r[1] = b; c.icount += 7; c.zf = 1; c.cf = 0; c.sf = 0; c.of = 0; c.pf = 1; c.af = 0; return ret(c, m); }
+    if (w === 0) { r[0] = a; r[1] = b; r[2] = 0xffffffff; c.icount += 12; c.zf = 1; c.cf = 0; c.sf = 0; c.of = 0; c.pf = 1; return ret(c, m); }
+    w32(m, sp - 8, r[3]); // push ebx
+    let last = m.r8(a + w - 1);
+    const u8 = m.u8, cp = m.codePages;
+    const overlap = !(a + w <= b || b + w <= a);
+    if (!overlap && !cp[a >>> 12] && !cp[(a + w - 1) >>> 12] && !cp[b >>> 12] && !cp[(b + w - 1) >>> 12] && m.noFastW !== true && a >= 4096 && b >= 4096 && a + w <= m.size && b + w <= m.size) {
+      if (w <= 64) { for (let i = 0; i < w; i++) { const t = u8[a + i]; u8[a + i] = u8[b + i]; u8[b + i] = t; } }
+      else { const t = u8.slice(a, a + w); u8.copyWithin(a, b, b + w); u8.set(t, b); }
+    } else { let y = 0; for (let i = 0; i < w; i++) { const x = m.r8(b + i); y = m.r8(a + i); m.w8(a + i, x); m.w8(b + i, y); } last = y; }
+    r[0] = (a + w) >>> 0; r[1] = (b + w) >>> 0; r[2] = (((w - 1) & 0xffffff00) | last) >>> 0;
+    c.icount += 15 + 8 * w; c.zf = 1; c.sf = 0; c.of = 0; c.pf = 1; c.af = 0;
+    return ret(c, m);
+  } };
 // Las transformaciones x87 quedan disponibles pero no se instalan: el JIT con regiones las ejecuta igual de rápido.
-export const ACCELS = [BLIT32];
-export const ACCELS_ALL = [BLIT32, XNORM, XCOORD, WNORM, WCOORD];
+export const ACCELS = [BLIT32, QSWAP];
+export const ACCELS_ALL = [BLIT32, QSWAP, XNORM, XCOORD, WNORM, WCOORD];
 export function installAccel(emu, list = ACCELS) {
   const out = [];
   for (const A of list) {
