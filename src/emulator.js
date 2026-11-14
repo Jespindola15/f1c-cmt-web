@@ -69,6 +69,7 @@ export class Emulator {
     this.jit = new BlockCache(this);
     this.cpu.callHook = (e) => this.hooks.get(e)(this.cpu); // las regiones del JIT llaman a los aceleradores sin salir
     this.useJit = true; // false = intérprete puro (para comparar)
+    this.exitSample = 37;
     this.clockMode = 'virtual';
     this.instrPerMs = 90000;
     this.timeOffset = 0;
@@ -375,6 +376,7 @@ export class Emulator {
           let fn = fi >= 0 && fi < 0x200000 ? fast[fi] : map.get(eip);
           if (fn === undefined) fn = jit.get(eip);
           fn(c, r, mem);
+          if (this.regionHints && --this.exitSample <= 0) { this.exitSample = 37; jit.noteExit(fn, c.eip); } // perfil de salidas (desactivado: regiones grandes que V8 no optimiza)
         }
         return { status: 'running' };
       }

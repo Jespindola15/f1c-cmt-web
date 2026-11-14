@@ -437,22 +437,29 @@ function blockSource(emu, eip, dec = blockDecode(emu, eip), liveOut = F_ALL) {
   let body = '';
   let compiled = 0, fallbacks = 0, ended = false, succ = [];
   const pages = new Set([eip >>> 12]);
+  const X = emu.x87Model === false ? null : new X87Model();
   for (const ins of list) {
     pages.add(ins.start >>> 12); if (ins.len) pages.add((ins.start + ins.len - 1) >>> 12);
-    if (ins.fallback) { body += `c.eip=${ins.start};c.step();return;`; fallbacks++; ended = true; break; }
+    if (ins.fallback) { body += (X ? X.flush() : '') + `c.eip=${ins.start};c.step();return;`; fallbacks++; ended = true; break; }
     const t = translate(ins, ins.need);
+    if (t && X) {
+      const isFpu = !ins.two && ins.op >= 0xd8 && ins.op <= 0xdf;
+      if (isFpu && !t.code.includes('c.fpu.exec(')) { const mc = X.rewrite(t.code); if (mc !== null) t.code = mc; else t.code = X.flush() + t.code; }
+      else if (/c\.(step|fpu\.exec|callHook)\(|c\.fpu\.top/.test(t.code)) t.code = X.flush() + t.code;
+    }
     if (t) {
       body += t.code;
       compiled++;
       if (t.end) { ended = true; succ = staticSucc(ins); break; }
     } else {
       // intérprete para esta instrucción; si podía saltar, termina el bloque
-      body += `c.eip=${ins.start};c.step();`;
+      body += (X ? X.flush() : '') + `c.eip=${ins.start};c.step();`;
       fallbacks++;
       if (isControl(ins)) { body += 'return;'; ended = true; break; }
     }
   }
   if (!ended) { body += `c.eip=${a};`; succ = [a]; }
+  if (X) body = X.prologue() + body + X.flush();
   return { list, body, pages, compiled, fallbacks, ended, succ };
 }
 function staticSucc(ins) {
@@ -480,6 +487,7 @@ export function compileBlock(emu, eip) {
 const REGION_BLOCKS = 40, REGION_INSTRS = 900;
 export function compileRegion(emu, entry) {
   const decs = new Map(); const queue = [entry]; let instrs = 0;
+  const hints = emu.jit?.hints?.get(entry); // destinos observados de saltos/llamadas indirectas (perfil)
   const hooks = emu.hooks;
   if (hooks && hooks.has(entry)) return compileBlock(emu, entry);
   while (queue.length && decs.size < REGION_BLOCKS && instrs < REGION_INSTRS) {
@@ -490,24 +498,34 @@ export function compileRegion(emu, entry) {
     if (!d.list.length) continue;
     decs.set(e, d); instrs += d.list.length;
     for (const t of d.succ) if (!decs.has(t)) queue.push(t);
+    if (!queue.length && hints) { for (const h of hints) if (!decs.has(h)) queue.push(h); }
   }
   if (decs.size <= 1) return compileBlock(emu, entry);
-  // liveness de flags entre bloques de la región (punto fijo); salidas a código de fuera: todos vivos
-  const lin = new Map(); for (const e of decs.keys()) lin.set(e, 0);
-  const outOf = (d) => { if (d.dyn) return F_ALL; let o = 0; for (const t of d.succ) o |= decs.has(t) ? lin.get(t) : F_ALL; return o; };
-  for (let changed = true, guard = 0; changed && guard < 100; guard++) { changed = false;
-    for (const [e, d] of decs) { const v = d.hook ? F_ALL : liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
-  const pages = new Set(); let compiled = 0, fallbacks = 0, n = 0;
-  let cases = '';
-  for (const [e, d] of decs) {
-    // función acelerada (hook): se llama sin salir de la región; si pide ejecutar el código original, se sale
-    if (d.hook) { cases += `case ${e}:{if(c.callHook(${e})!==false){c.eip=${e};return;}}continue;`; continue; }
-    const b = blockSource(emu, e, d, emu.regionFlags === false ? F_ALL : outOf(d));
-    for (const p of b.pages) pages.add(p); compiled += b.compiled; fallbacks += b.fallbacks; n += b.list.length;
-    cases += `case ${e}:{c.icount+=${b.compiled};c.instrStart=${e};${b.body}}continue;`;
+  // V8 no optimiza funciones muy grandes: se acota el tamaño del JS generado (se descartan los últimos bloques)
+  const LIMIT = emu.regionSrcLimit || 16000;
+  let keys = [...decs.keys()], src, pages, compiled, fallbacks, n;
+  for (;;) {
+    const sub = new Map(keys.map((k) => [k, decs.get(k)]));
+    const lin = new Map(); for (const e of sub.keys()) lin.set(e, 0);
+    const outOf = (d) => { if (d.dyn) return F_ALL; let o = 0; for (const t of d.succ) o |= sub.has(t) ? lin.get(t) : F_ALL; return o; };
+    for (let changed = true, guard = 0; changed && guard < 100; guard++) { changed = false;
+      for (const [e, d] of sub) { const v = d.hook ? F_ALL : liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
+    pages = new Set(); compiled = 0; fallbacks = 0; n = 0;
+    let cases = '';
+    for (const [e, d] of sub) {
+      // función acelerada (hook): se llama sin salir de la región; si pide ejecutar el código original, se sale
+      if (d.hook) { cases += `case ${e}:{if(c.callHook(${e})!==false){c.eip=${e};return;}}continue;`; continue; }
+      const b = blockSource(emu, e, d, emu.regionFlags === false ? F_ALL : outOf(d));
+      for (const p of b.pages) pages.add(p); compiled += b.compiled; fallbacks += b.fallbacks; n += b.list.length;
+      cases += `case ${e}:{c.icount+=${b.compiled};c.instrStart=${e};${b.body}}continue;`;
+    }
+    src = `const self=reg;for(let it=0;it<2048;it++){if(self.dead||c.icount>=c.stopAt)return;switch(c.eip){${cases}default:return;}}`;
+    if (src.length <= LIMIT || keys.length <= 2) break;
+    keys = keys.slice(0, Math.max(2, Math.floor(keys.length * 0.7)));
   }
-  const src = `const self=c.jitSelf;for(let it=0;it<2048;it++){if(self.dead||c.icount>=c.stopAt)return;switch(c.eip){${cases}default:return;}}`;
-  return finish(emu, entry, src, pages, n, compiled, fallbacks, true);
+  if (keys.length <= 1) return compileBlock(emu, entry);
+  decs.clear(); for (const k of keys) decs.set(k, true);
+  const fn = finish(emu, entry, src, pages, n, compiled, fallbacks, true); fn.entry = entry; fn.inRegion = new Set(decs.keys()); return fn;
 }
 
 function finish(emu, eip, src, pages, n, compiled, fallbacks, region = false) {
@@ -516,7 +534,7 @@ function finish(emu, eip, src, pages, n, compiled, fallbacks, region = false) {
   if (emu.jitNames) src += `\n//# sourceURL=${region ? 'reg' : 'blk'}_${eip.toString(16)}.js`;
   let fn;
   try {
-    if (region) { const inner = new Function('c', 'r', 'm', src); fn = (c, r, m) => { c.jitSelf = fn; inner(c, r, m); }; }
+    if (region) fn = new Function(`return function reg(c,r,m){${src}\n}`)(); // función con nombre: `reg` = sí misma (sin envoltorio compartido)
     else fn = new Function('c', 'r', 'm', src);
   } catch (e) { throw new Error(`JIT: error compilando ${region ? 'región' : 'bloque'} ${eip.toString(16)}: ${e.message}\n${src.slice(0, 2000)}`); }
   fn.pages = pages; fn.n = n; fn.compiled = compiled; fn.fallbacks = fallbacks; fn.dead = false;
@@ -546,6 +564,7 @@ export class BlockCache {
     // tabla directa para el rango 0x400000..0x600000 (el EXE): evita el hash del Map en cada salto
     this.fastBase = 0x400000; this.fast = new Array(0x200000);
     this.byPage = new Map();
+    this.hints = new Map();
     this.stats = { compiled: 0, invalidated: 0, instrs: 0, fallbacks: 0 };
     const mem = emu.mem;
     mem.codePages = new Uint8Array(mem.size >>> 12);
@@ -567,6 +586,16 @@ export class BlockCache {
       let s = this.byPage.get(p); if (!s) this.byPage.set(p, (s = new Set())); s.add(eip);
     }
     return fn;
+  }
+  // Perfil de salidas de regiones (muestreado): si una región sale muchas veces hacia el mismo destino
+  // (llamada o salto indirecto, ret a otro sitio), se recompila incluyendo ese destino.
+  noteExit(fn, eip) {
+    if (!fn.inRegion || eip < 0x1000 || (eip >= 0x00100000 && eip < 0x00110000) || fn.inRegion.has(eip)) return;
+    const ex = fn.exits || (fn.exits = new Map()); const k = (ex.get(eip) || 0) + 1; ex.set(eip, k);
+    if (k < 24) return;
+    let h = this.hints.get(fn.entry); if (!h) this.hints.set(fn.entry, (h = new Set()));
+    if (h.size >= 16 || h.has(eip)) return;
+    h.add(eip); this.stats.recompiles = (this.stats.recompiles || 0) + 1; this.forget(fn.entry);
   }
   invalidatePage(page) {
     const s = this.byPage.get(page);
@@ -734,4 +763,53 @@ function wrapRegWrites(src) {
     out += src.slice(i, st) + `(${src.slice(st, j)})>>>0`; i = j; re.lastIndex = j;
   }
   return out + src.slice(i);
+}
+
+// ---------- pila x87 en variables locales dentro de un bloque ----------
+// Las posiciones de la pila se siguen en tiempo de compilación (profundidad d respecto del tope al entrar a
+// un tramo): st(i) = variable local del slot relativo d+i. Se vuelcan a la FPU (valores, tags y tope) antes
+// de cualquier instrucción que use la FPU de otra forma y al final del bloque. Mismo resultado que fpu.js.
+class X87Model {
+  constructor() { this.n = 0; this.reset(); this.used = false; }
+  reset() { this.d = 0; this.vars = new Map(); this.dirty = new Set(); this.tags = new Map(); this.lo = 0; this.hi = 0; this.base = null; this.loaded = new Set(); }
+  ensureBase(out) { if (this.base === null) { this.base = `_fb${this.n++}`; this.decl = (this.decl || '') + `,${this.base}`; out.push(`${this.base}=c.fpu.top`); this.used = true; } }
+  slot(rel) { return `(${this.base}+(${rel}))&7`; }
+  varFor(rel) { let v = this.vars.get(rel); if (!v) { v = `_fx${this.n++}`; this.decl = (this.decl || '') + `,${v}`; this.vars.set(rel, v); } return v; }
+  read(rel, pre) { const v = this.vars.get(rel); if (v && this.loaded?.has(v)) return v; const nv = this.varFor(rel); (this.loaded ??= new Set()).add(nv); pre.push(`${nv}=c.fpu.st[${this.slot(rel)}]`); return nv; }
+  span(rel) { const lo = Math.min(this.lo, rel), hi = Math.max(this.hi, rel); if (hi - lo >= 8) return false; this.lo = lo; this.hi = hi; return true; }
+  // reescribe un fragmento con f.get/f.set/f.push/f.pop; null si no se puede (se usará la FPU directa)
+  rewrite(code) {
+    const save = { d: this.d, vars: new Map(this.vars), dirty: new Set(this.dirty), tags: new Map(this.tags), lo: this.lo, hi: this.hi, loaded: new Set(this.loaded || []), base: this.base, decl: this.decl, n: this.n };
+    const pre = []; this.ensureBase(pre);
+    const fail = () => { Object.assign(this, save); return null; };
+    const self = this; let ok = true;
+    const rw = (s) => {
+      let out = '', i = 0;
+      for (;;) {
+        const m = /\bf\.(get|set|push|pop)\(/g; m.lastIndex = i; const mt = m.exec(s);
+        if (!mt) { out += s.slice(i); return out; }
+        const r = args(s, mt.index + mt[0].length); if (!r) { ok = false; return s; }
+        const [A, end] = r; out += s.slice(i, mt.index); const k = mt[1];
+        if (k === 'get') { const rel = self.d + Number(A[0]); if (!Number.isInteger(rel) || !self.span(rel)) { ok = false; return s; } const p2 = []; const v = self.read(rel, p2); out += p2.length ? `(${p2.join(',')},${v})` : v; }
+        else if (k === 'pop') { const rel = self.d; if (!self.span(rel)) { ok = false; return s; } const p2 = []; const v = self.read(rel, p2); self.tags.set(rel, 1); self.d++; out += p2.length ? `(${p2.join(',')},${v})` : v; }
+        else if (k === 'set') { const val = rw(A[1]); const rel = self.d + Number(A[0]); if (!Number.isInteger(rel) || !self.span(rel)) { ok = false; return s; } const v = self.varFor(rel); self.loaded.add(v); self.dirty.add(rel); self.tags.set(rel, 0); out += `(${v}=${val})`; }
+        else if (k === 'push') { const val = rw(A[0]); const rel = self.d - 1; if (!self.span(rel)) { ok = false; return s; } self.d--; const v = self.varFor(rel); self.loaded.add(v); self.dirty.add(rel); self.tags.set(rel, 0); out += `(${v}=${val})`; }
+        i = end + 1;
+      }
+    };
+    let res = rw(code);
+    if (!ok || /\bf\.(get|set|push|pop)\(/.test(res)) return fail();
+    res = res.replace(/c\.fpu\.top/g, `((${this.base}+(${this.d}))&7)`);
+    return (pre.length ? pre.join(';') + ';' : '') + res;
+  }
+  flush() {
+    if (this.base === null) return '';
+    let o = '';
+    for (const rel of this.dirty) o += `c.fpu.st[${this.slot(rel)}]=${this.vars.get(rel)};`;
+    for (const [rel, t] of this.tags) o += `c.fpu.tagEmpty[${this.slot(rel)}]=${t};`;
+    o += `c.fpu.top=(${this.base}+(${this.d}))&7;`;
+    this.reset(); this.loaded = new Set();
+    return o;
+  }
+  prologue() { return this.used ? `let _fdummy${this.decl || ''};` : ''; }
 }
