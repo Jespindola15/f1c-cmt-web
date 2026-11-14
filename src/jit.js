@@ -511,15 +511,27 @@ export function compileRegion(emu, entry) {
     for (let changed = true, guard = 0; changed && guard < 100; guard++) { changed = false;
       for (const [e, d] of sub) { const v = d.hook ? F_ALL : liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
     pages = new Set(); compiled = 0; fallbacks = 0; n = 0;
-    let cases = '';
+    // despacho interno por índice denso (switch(pc) -> tabla de saltos); los saltos estáticos fijan pc
+    // directamente; los dinámicos (ret, indirectos) buscan el índice por EIP.
+    const idx = new Map(); [...sub.keys()].forEach((e, i) => idx.set(e, i));
+    const pcOf = (t) => (idx.has(+t) ? idx.get(+t) : -1);
+    let cases = '', lookup = '';
     for (const [e, d] of sub) {
+      const i = idx.get(e); lookup += `case ${e}:pc=${i};continue;`;
       // función acelerada (hook): se llama sin salir de la región; si pide ejecutar el código original, se sale
-      if (d.hook) { cases += `case ${e}:{if(c.callHook(${e})!==false){c.eip=${e};return;}}continue;`; continue; }
+      if (d.hook) { cases += `case ${i}:{if(c.callHook(${e})!==false){c.eip=${e};return;}}pc=-1;continue;`; continue; }
       const b = blockSource(emu, e, d, emu.regionFlags === false ? F_ALL : outOf(d));
       for (const p of b.pages) pages.add(p); compiled += b.compiled; fallbacks += b.fallbacks; n += b.list.length;
-      cases += `case ${e}:{c.icount+=${b.compiled};c.instrStart=${e};${b.body}}continue;`;
+      let body = b.body;
+      const k = body.lastIndexOf('c.eip='); let tail = 'pc=-1;';
+      if (k >= 0) {
+        const rest = body.slice(k); let mt;
+        if ((mt = /^c\.eip=([^;?]*)\?(\d+):(\d+);/.exec(rest))) { body = body.slice(0, k) + `if(${mt[1]}){c.eip=${mt[2]};pc=${pcOf(mt[2])};}else{c.eip=${mt[3]};pc=${pcOf(mt[3])};}` + rest.slice(mt[0].length); tail = ''; }
+        else if ((mt = /^c\.eip=(\d+);/.exec(rest))) { body = body.slice(0, k) + `c.eip=${mt[1]};pc=${pcOf(mt[1])};` + rest.slice(mt[0].length); tail = ''; }
+      }
+      cases += `case ${i}:{c.icount+=${b.compiled};c.instrStart=${e};${tail}${body}}continue;`;
     }
-    src = `const self=reg;for(let it=0;it<2048;it++){if(self.dead||c.icount>=c.stopAt)return;switch(c.eip){${cases}default:return;}}`;
+    src = `const self=reg;let pc=0;for(let it=0;it<2048;it++){if(self.dead||c.icount>=c.stopAt)return;switch(pc){${cases}default:switch(c.eip){${lookup}default:return;}}}`;
     if (src.length <= LIMIT || keys.length <= 2) break;
     keys = keys.slice(0, Math.max(2, Math.floor(keys.length * 0.7)));
   }
