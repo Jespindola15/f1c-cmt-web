@@ -25,7 +25,9 @@ export class MemFault extends Error {
 
 export class Memory {
   constructor(size = MEM_SIZE) {
-    this.buf = new ArrayBuffer(size);
+    // Memoria de WebAssembly (si existe) para que las rutinas SIMD de accel.js trabajen sobre ella sin copias
+    if (typeof WebAssembly !== 'undefined' && size === 0x40000000) { this.wasmMem = new WebAssembly.Memory({ initial: size >>> 16, maximum: size >>> 16 }); this.buf = this.wasmMem.buffer; }
+    else this.buf = new ArrayBuffer(size);
     this.u8 = new Uint8Array(this.buf);
     this.dv = new DataView(this.buf);
     // vistas alineadas para las rutas rápidas (host little-endian, como x86)

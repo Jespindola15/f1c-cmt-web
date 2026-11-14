@@ -3,6 +3,13 @@
 // Cada acelerador verifica primero los bytes de la rutina original; si no coinciden, no se instala.
 // La semántica replica exactamente la rutina (incluidos los efectos en variables globales y los bucles do-while).
 
+import { WASM_ACCEL_B64 } from './wasm-accel.js';
+let wasmModule = null;
+function wasmFor(m) {
+  if (!m.wasmMem || m.noWasm) return null;
+  if (m._wasm === undefined) { try { wasmModule ??= new WebAssembly.Module(Uint8Array.from(atob(WASM_ACCEL_B64), (ch) => ch.charCodeAt(0))); m._wasm = new WebAssembly.Instance(wasmModule, { e: { mem: m.wasmMem } }).exports; } catch { m._wasm = null; } }
+  return m._wasm;
+}
 const hex = (s) => s.replace(/\s+/g, '').match(/../g).map((h) => parseInt(h, 16));
 function matches(mem, addr, bytes) { for (let i = 0; i < bytes.length; i++) if (mem.u8[addr + i] !== bytes[i]) return false; return true; }
 const ret = (c, m, nargs = 0) => { c.eip = m.r32(c.r[4]); c.r[4] = (c.r[4] + 4) >>> 0; return false; };
@@ -21,6 +28,12 @@ const BLIT32 = { addr: 0x560a82, sig: hex('55 8b ec 56 57 60 fc 8b 45 20 c7 05 4
     m.w32(0x5dd844, plain ? 1 : 0); m.w32(0x5dd804, k); m.w32(0x5dd814, w);
     const rows = h > 0 ? h : 1, u32 = m.u32; const cp = m.codePages; const cols = plain ? w : (w > 0 ? w : 1);
     let s = src, d = dst, writes = 0;
+    const W = !plain && wasmFor(m);
+    if (W) { // ruta SIMD: sólo si ninguna página destino tiene código compilado y todo está dentro de la memoria
+      const last = dst + (rows - 1) * dPitch, end = last + cols * 4; const sEnd = src + (rows - 1) * sPitch + cols * 4; let ok = dPitch >= 0 && sPitch >= 0 && end <= m.size && sEnd <= m.size && (end <= src || sEnd <= dst);
+      for (let p = dst >>> 12; ok && p <= (end - 1) >>> 12; p++) if (cp[p]) ok = false;
+      if (ok) { writes = W.blitKey(src, sPitch, dst, dPitch, cols, rows, k) >>> 0; c.icount += 19 + 6 * rows + 6 * rows * cols + writes + 6; return ret(c, m); }
+    }
     for (let y = 0; y < rows; y++) {
       if (cp[d >>> 12] || cp[(d + cols * 4) >>> 12]) { // destino con código compilado (no ocurre en la práctica): ruta segura
         for (let x = 0; x < cols; x++) { const v = m.r32(s + 4 * x); if (plain || v !== k) { m.w32(d + 4 * x, v); writes++; } }
