@@ -29,6 +29,7 @@ import { BINKW32 } from './win32/binkw32.js';
 import { WSOCK32 } from './win32/wsock32.js';
 export { ExitSignal, HaltSignal };
 
+export const HOST_FN = new Map(); // etiqueta -> {n, fn} (para restaurar instantáneas)
 export const MODULES = {
   'KERNEL32.DLL': kernel32, 'USER32.DLL': user32, 'GDI32.DLL': gdi32, 'WINMM.DLL': winmm,
   'DDRAW.DLL': ddraw, 'DSOUND.DLL': dsound, 'MSACM32.DLL': msacm32, 'ADVAPI32.DLL': advapi32,
@@ -124,6 +125,7 @@ export class Emulator {
   }
   // función JS anónima expuesta al guest (métodos COM, callbacks)
   hostFunction(label, n, fn) {
+    HOST_FN.set(label, { n, fn });
     const idx = this.thunks.length;
     const addr = THUNK_BASE + idx * 4;
     this.thunks.push({ dll: 'COM', name: label, impl: { n, fn }, addr });
