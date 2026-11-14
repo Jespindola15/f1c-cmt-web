@@ -23,6 +23,23 @@ Todavía **no** corre en Chrome ni dibuja: falta el dispositivo Direct3D 8 → W
 - `src/emulator.js`: las secciones PE se copian enteras (`SizeOfRawData`), como Windows: el parche CMT vive pasado el `VirtualSize` de `.text`.
 - `src/win32/f1c.js` (nuevo): VFS sobre disco con carpetas y directorio actual (solo lectura; escrituras en memoria), ~60 APIs que F1C usa, `IDirect3D8` mínimo, `IsProcessorFeaturePresent`.
 
+## Rendimiento (14/11/2026) — menú principal con el auto 3D, misma PC (i5-13420H)
+
+| Paso | Node (cuadros/s) | Chrome, sólo emulación |
+|---|---|---|
+| Inicio (JIT por bloques) | 4,8 | 3 |
+| Memoria con vistas tipadas + MMX en el JIT | 8,3 | |
+| Accesos a memoria y pila x87 en línea | 23 | |
+| Regiones (switch sobre EIP), flags entre bloques, registros en locales | 31 | 38,6 |
+| Pila x87 en locales, despacho por índice denso | 45 | 47,5 |
+| Memoria en WebAssembly.Memory + blit con color clave en WASM SIMD | 49 | 50 |
+
+Cada cuadro del menú cuesta ~19,6 M instrucciones x86 (iluminación por vértice del auto en software + composición
+de la interfaz). Verificación: `tests/jit_equiv.mjs` (JIT optimizado vs intérprete: registros, FPU, MMX/XMM y hash de
+toda la memoria idénticos tras 1.200 M instrucciones en el menú y 600 M en la carga), `tests/accel/accel_test.mjs`
+(aceleradores vs rutina original) y `tests/simd/mmx_jit.mjs`. Medir: `node tools/bench-snap.mjs <juego> snap/menu-principal`;
+en Chrome, `?nodraw=1` mide sólo la emulación y la barra superior muestra ms de emulación y de gráficos por cuadro.
+
 ## Uso
 
 ```bash

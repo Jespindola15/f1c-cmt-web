@@ -51,36 +51,27 @@ const BLIT32 = { addr: 0x560a82, sig: hex('55 8b ec 56 57 60 fc 8b 45 20 c7 05 4
 //   0x53bea0 / 0x53bec0: envoltorios de la tabla de funciones matemáticas (this, v, out, M).
 // Se reproduce la misma secuencia de operaciones x87 sobre la FPU emulada (mismo orden de sumas, mismos
 // valores residuales en la pila) y las mismas escrituras en la pila del programa.
+// Lectura/escritura de float32 sin cierres (rápidas en el caso alineado)
+function rf(m, a) { return (a & 3) === 0 && a >= 4096 && a < 1073741824 ? m.f32a[a >>> 2] : m.f32(a); }
+function wf(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 1073741824 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.f32a[a >>> 2] = v; else m.wf32(a, v); }
+function w32(m, a, v) { if ((a & 3) === 0 && a >= 4096 && a < 1073741824 && m.codePages[a >>> 12] === 0 && m.noFastW !== true) m.u32[a >>> 2] = v; else m.w32(a, v); }
 function x87Transform(emu, v, out, M, coord) {
   const f = emu.cpu.fpu, m = emu.mem, ST = f.st, TG = f.tagEmpty;
-  const rf = (a) => ((a & 3) === 0 && a >= 4096 && a < m.size ? m.f32a[a >>> 2] : m.f32(a));
-  const V0 = rf(v), V1 = rf(v + 4), V2 = rf(v + 8);
-  let t = f.top, i, x;
-  // fld/fmul x6
-  t = (t - 1) & 7; ST[t] = rf(M) * V0; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 4) * V0; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 8) * V0; TG[t] = 0;
-  t = (t - 1) & 7; ST[t] = rf(M + 16) * V1; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 20) * V1; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 24) * V1; TG[t] = 0;
-  // fxch st2; faddp st5; faddp st3; faddp st1
-  i = (t + 2) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x;
-  i = (t + 5) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  i = (t + 3) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  i = (t + 1) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  t = (t - 1) & 7; ST[t] = rf(M + 32) * V2; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 36) * V2; TG[t] = 0; t = (t - 1) & 7; ST[t] = rf(M + 40) * V2; TG[t] = 0;
-  i = (t + 2) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x;
-  i = (t + 5) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  i = (t + 3) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  i = (t + 1) & 7; ST[i] = ST[i] + ST[t]; TG[t] = 1; t = (t + 1) & 7;
-  const wf = (a, val) => { if ((a & 3) === 0 && a >= 4096 && a < m.size && m.fastW(a)) m.f32a[a >>> 2] = val; else m.wf32(a, val); };
-  if (coord) {
-    i = (t + 2) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x; ST[t] = ST[t] + rf(M + 48);
-    i = (t + 1) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x; ST[t] = ST[t] + rf(M + 52);
-    i = (t + 2) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x; ST[t] = ST[t] + rf(M + 56);
-    i = (t + 1) & 7; x = ST[t]; ST[t] = ST[i]; ST[i] = x;
-    wf(out, ST[t]); TG[t] = 1; t = (t + 1) & 7; wf(out + 8, ST[t]); TG[t] = 1; t = (t + 1) & 7; wf(out + 4, ST[t]); TG[t] = 1; t = (t + 1) & 7;
-  } else { wf(out + 8, ST[t]); TG[t] = 1; t = (t + 1) & 7; wf(out + 4, ST[t]); TG[t] = 1; t = (t + 1) & 7; wf(out, ST[t]); TG[t] = 1; t = (t + 1) & 7; }
-  f.top = t;
+  const V0 = rf(m, v), V1 = rf(m, v + 4), V2 = rf(m, v + 8);
+  const p0 = rf(m, M) * V0, p1 = rf(m, M + 4) * V0, p2 = rf(m, M + 8) * V0, p4 = rf(m, M + 16) * V1, p5 = rf(m, M + 20) * V1, p6 = rf(m, M + 24) * V1;
+  const q8 = rf(m, M + 32) * V2, q9 = rf(m, M + 36) * V2, q10 = rf(m, M + 40) * V2;
+  // misma secuencia que el x87: x=(p0+p4)+q8, y=(p1+p5)+q9, z=(p2+p6)+q10 (+ traslación)
+  let x = p0 + p4, y = p1 + p5, z = p2 + p6; x = x + q8; y = y + q9; z = z + q10;
+  const t = f.top;
+  if (coord) { x = x + rf(m, M + 48); y = y + rf(m, M + 52); z = z + rf(m, M + 56); }
+  // valores que la secuencia fld/fxch/faddp/fstp deja en los registros físicos (tags vacíos, mismo tope)
+  if (coord) { ST[(t - 1) & 7] = y; ST[(t - 2) & 7] = z; ST[(t - 3) & 7] = x; } else { ST[(t - 1) & 7] = x; ST[(t - 2) & 7] = y; ST[(t - 3) & 7] = z; }
+  ST[(t - 4) & 7] = q10; ST[(t - 5) & 7] = q9; ST[(t - 6) & 7] = q8;
+  for (let i = 1; i <= 6; i++) TG[(t - i) & 7] = 1;
+  if (coord) { wf(m, out, x); wf(m, out + 8, z); wf(m, out + 4, y); } else { wf(m, out + 8, z); wf(m, out + 4, y); wf(m, out, x); }
 }
 // marco de la función llamada (push ebp/esi/edi/eax/ebx/ecx/edx) debajo de `sp` (= esp al entrar, apunta al retorno)
-function calleeFrame(m, r, sp) { m.w32(sp - 4, r[5]); m.w32(sp - 8, r[6]); m.w32(sp - 12, r[7]); m.w32(sp - 16, r[0]); m.w32(sp - 20, r[3]); m.w32(sp - 24, r[1]); m.w32(sp - 28, r[2]); }
+function calleeFrame(m, r, sp) { w32(m, sp - 4, r[5]); w32(m, sp - 8, r[6]); w32(m, sp - 12, r[7]); w32(m, sp - 16, r[0]); w32(m, sp - 20, r[3]); w32(m, sp - 24, r[1]); w32(m, sp - 28, r[2]); }
 const XSIG = (tail) => hex('55 8b ec 56 57 50 53 51 52 8b 75 08 8b 7d 0c 8b 45 10 d9 00 d8 0e d9 40 04 d8 0e d9 40 08 d8 0e' + tail);
 function xformCallee(coord, n) {
   return (emu) => { const c = emu.cpu, m = emu.mem, r = c.r, sp = r[4];
@@ -90,7 +81,7 @@ function xformCallee(coord, n) {
 function xformWrapper(coord, retAddr, n) {
   return (emu) => { const c = emu.cpu, m = emu.mem, r = c.r, sp = r[4];
     const p1 = m.r32(sp + 8), p2 = m.r32(sp + 12), p3 = m.r32(sp + 16);
-    r[0] = p3; r[1] = p2; r[2] = p1; m.w32(sp - 4, p3); m.w32(sp - 8, p2); m.w32(sp - 12, p1); m.w32(sp - 16, retAddr);
+    r[0] = p3; r[1] = p2; r[2] = p1; w32(m, sp - 4, p3); w32(m, sp - 8, p2); w32(m, sp - 12, p1); w32(m, sp - 16, retAddr);
     calleeFrame(m, r, sp - 16); x87Transform(emu, p1, p2, p3, coord); c.icount += n; return ret(c, m); };
 }
 const XNORM = { addr: 0x55ef24, sig: XSIG(''), name: 'TransformNormal x87', fn: xformCallee(false, 48) };
