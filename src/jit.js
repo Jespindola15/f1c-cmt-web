@@ -145,6 +145,9 @@ function flagInfo(ins) {
     if (op === 0xd3) return { reads: F_ALL, writes: 0 }; // count puede ser 0 -> flags intactos
     if (op === 0x69 || op === 0x6b) return { reads: 0, writes: CF | OF };
     if (op === 0xf7 && reg === 3) return { reads: 0, writes: F_ALL };
+    if (op === 0xf7 && (reg === 4 || reg === 5)) return { reads: 0, writes: CF | OF };
+    if (op === 0x9e) return { reads: 0, writes: CF | PF | AF | ZF | SF };
+    if (op === 0xd7) return { reads: 0, writes: 0 };
     if ((op === 0xf6 || op === 0xf7) && reg <= 1) return { reads: 0, writes: F_LOGIC };
     if (op === 0x9b) return { reads: 0, writes: 0 };
     if (op === 0xda || op === 0xdb) return { reads: F_ALL, writes: F_ALL & 0 }; // fcmov lee flags; fcomi los escribe
@@ -270,6 +273,10 @@ function translate(ins, need) {
       if (!need) return { code: `{${pre}r[${reg}]=Math.imul(${rd(4)}|0,${b});}` };
       return { code: `{${pre}c.imulSet(${rd(4)}|0,${b},4,${reg});}` };
     }
+    if (op === 0xf7 && W === 4 && reg === 5) return { code: `{${pre}const v=${rd(4)};const p=BigInt(r[0]|0)*BigInt(v|0);r[0]=Number(BigInt.asUintN(32,p));r[2]=Number(BigInt.asUintN(32,p>>32n));c.cf=c.of=BigInt.asIntN(32,p)!==p?1:0;}` };
+    if (op === 0xf7 && W === 4 && reg === 4) return { code: `{${pre}const v=${rd(4)};const p=BigInt(r[0])*BigInt(v);r[0]=Number(p&0xffffffffn);r[2]=Number(p>>32n);c.cf=c.of=r[2]?1:0;}` };
+    if (op === 0xd7 && !ins.seg) return { code: 'r[0]=(r[0]&0xffffff00)|m.r8((r[3]+(r[0]&0xff))>>>0);' };
+    if (op === 0x9e) return { code: '{const ah=(r[0]>>>8)&0xff;c.cf=ah&1;c.pf=(ah>>2)&1;c.af=(ah>>4)&1;c.zf=(ah>>6)&1;c.sf=(ah>>7)&1;}' };
     // ---- control de flujo (cierran el bloque) ----
     if (op >= 0x70 && op <= 0x7f) { const t = (next + ((ins.imm << 24) >> 24)) >>> 0; return { code: `c.eip=${CC[op & 15]}?${t}:${next};`, end: true }; }
     if (op === 0xeb) return { code: `c.eip=${(next + ((ins.imm << 24) >> 24)) >>> 0};`, end: true };
@@ -320,8 +327,17 @@ function fpuFast(op, mod, reg, rm) {
     if (op === 0xdb && reg === 3) return 'm.w32(a,f.toInt(f.pop(),32)>>>0);';
     if (op === 0xdf && reg === 0) return 'f.push((m.r16(a)<<16)>>16);';
     if (op === 0xdf && reg === 3) return 'm.w16(a,f.toInt(f.pop(),16)&0xffff);';
+    if (op === 0xdf && reg === 5) return '{const lo=m.r32(a),hi=m.r32(a+4)|0;f.push(hi*4294967296+lo);}';
+    if (op === 0xdf && reg === 7) return '{const v=f.toInt(f.pop(),64);const big=BigInt.asUintN(64,BigInt(v));m.w32(a,Number(big&0xffffffffn));m.w32(a+4,Number(big>>32n));}';
+    if (op === 0xdd && reg === 7) return 'm.w16(a,((f.sw&0x3fff&~0x4700)|(f.c0<<8)|(f.c1<<9)|(f.c2<<10)|(c.fpu.top<<11)|(f.c3<<14))&0xffff);';
     return null;
   }
+  if (op === 0xd9 && reg === 7 && rm === 6) return 'f.set(0,Math.sin(f.get(0)));f.c2=0;';
+  if (op === 0xd9 && reg === 7 && rm === 7) return 'f.set(0,Math.cos(f.get(0)));f.c2=0;';
+  if (op === 0xd9 && reg === 6 && rm === 2) return 'f.set(0,Math.tan(f.get(0)));f.push(1);f.c2=0;';
+  if (op === 0xd9 && reg === 6 && rm === 3) return '{const x=f.pop();f.set(0,Math.atan2(f.get(0),x));}';
+  if (op === 0xd9 && reg === 7 && rm === 4) return 'f.set(0,f.round(f.get(0)));';
+  if (op === 0xd9 && reg === 7 && rm === 0) return '{const a=f.get(0),b=f.get(1);f.set(0,a%b);f.c2=0;}';
   if (op === 0xd8 && (reg === 2 || reg === 3)) return CMP(`f.get(${rm})`) + (reg === 3 ? 'f.pop();' : '');
   if (op === 0xde && reg === 3 && rm === 1) return CMP('f.get(1)') + 'f.pop();f.pop();';
   if (op === 0xdf && reg === 4 && rm === 0) return 'r[0]=(r[0]&0xffff0000)|(((f.sw&0x3fff&~0x4700)|(f.c0<<8)|(f.c1<<9)|(f.c2<<10)|(c.fpu.top<<11)|(f.c3<<14))&0xffff);';
