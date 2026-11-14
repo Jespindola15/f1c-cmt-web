@@ -19,7 +19,8 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 in vec4 vDiff; in vec4 vSpec; in vec2 vT0; in vec2 vT1;
-uniform sampler2D uTex0; uniform sampler2D uTex1; uniform bool uHas0; uniform bool uHas1;
+uniform sampler2D uTex0; uniform sampler2D uTex1; uniform bool uHas0; uniform bool uHas1; uniform ivec2 uSw;
+vec4 swz(vec4 t, int k) { return k == 1 ? t.bgra : k == 2 ? vec4(t.bgr, 1.0) : t; }
 uniform ivec3 uC0; uniform ivec3 uA0; uniform ivec3 uC1; uniform ivec3 uA1; uniform vec4 uTF;
 uniform int uAlphaFunc; uniform float uAlphaRef; uniform bool uAlphaTest;
 out vec4 o;
@@ -37,8 +38,8 @@ vec4 stage(ivec3 C, ivec3 A, vec4 cur, vec4 tex) {
 bool cmp(int f, float a, float b) { return f == 1 ? false : f == 2 ? a < b : f == 3 ? a == b : f == 4 ? a <= b : f == 5 ? a > b : f == 6 ? a != b : f == 7 ? a >= b : true; }
 void main() {
   vec4 cur = vDiff;
-  if (uC0.x != 1) { vec4 t = uHas0 ? texture(uTex0, vT0) : vec4(1.0); cur = stage(uC0, uA0, cur, t);
-    if (uC1.x != 1) { vec4 t1 = uHas1 ? texture(uTex1, vT1) : vec4(1.0); cur = stage(uC1, uA1, cur, t1); } }
+  if (uC0.x != 1) { vec4 t = uHas0 ? swz(texture(uTex0, vT0), uSw.x) : vec4(1.0); cur = stage(uC0, uA0, cur, t);
+    if (uC1.x != 1) { vec4 t1 = uHas1 ? swz(texture(uTex1, vT1), uSw.y) : vec4(1.0); cur = stage(uC1, uA1, cur, t1); } }
   cur.rgb = clamp(cur.rgb + vSpec.rgb * 0.0, 0.0, 1.0);
   if (uAlphaTest && !cmp(uAlphaFunc, floor(cur.a * 255.0 + 0.5), uAlphaRef)) discard;
   o = cur; }`;
@@ -51,7 +52,7 @@ export class GLBackend {
     const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
     const p = this.prog = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-    gl.useProgram(p); this.u = {}; for (const n of ['uRHW', 'uScreen', 'uWVP', 'uHasDiff', 'uTex0', 'uTex1', 'uHas0', 'uHas1', 'uC0', 'uA0', 'uC1', 'uA1', 'uTF', 'uAlphaFunc', 'uAlphaRef', 'uAlphaTest']) this.u[n] = gl.getUniformLocation(p, n);
+    gl.useProgram(p); this.u = {}; for (const n of ['uRHW', 'uScreen', 'uWVP', 'uHasDiff', 'uTex0', 'uTex1', 'uHas0', 'uHas1', 'uC0', 'uA0', 'uC1', 'uA1', 'uTF', 'uAlphaFunc', 'uAlphaRef', 'uAlphaTest', 'uSw']) this.u[n] = gl.getUniformLocation(p, n);
     gl.uniform1i(this.u.uTex0, 0); gl.uniform1i(this.u.uTex1, 1);
     this.vbo = gl.createBuffer(); this.ibo = gl.createBuffer(); this.vao = gl.createVertexArray(); gl.bindVertexArray(this.vao);
     this.texCache = new Map(); this.stats = { draws: 0, tris: 0, texUploads: 0, frames: 0, skipped: {} };
@@ -70,6 +71,7 @@ export class GLBackend {
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, this.rbZ);
   }
   clear(dev, fl, color, z, stencil) {
+    if (this.noDraw) return;
     const gl = this.gl; this.size(dev.backbuffer.w, dev.backbuffer.h);
     const v = dev.viewport; gl.enable(gl.SCISSOR_TEST); gl.scissor(v[0], dev.backbuffer.h - v[1] - v[3], v[2], v[3]); let bits = 0;
     if (fl & 1) { gl.clearColor(((color >> 16) & 255) / 255, ((color >> 8) & 255) / 255, (color & 255) / 255, ((color >>> 24) & 255) / 255); bits |= gl.COLOR_BUFFER_BIT; }
@@ -77,7 +79,7 @@ export class GLBackend {
     if (fl & 4) { gl.clearStencil(stencil); bits |= gl.STENCIL_BUFFER_BIT; }
     gl.colorMask(true, true, true, true); if (bits) gl.clear(bits); gl.disable(gl.SCISSOR_TEST);
   }
-  present(dev) { const T0 = performance.now(); this.present_(dev); if (this.timing) { this.gl.finish(); this.stats.presentMs = (this.stats.presentMs || 0) + performance.now() - T0; } }
+  present(dev) { const T0 = performance.now(); if (this.noDraw) this.stats.frames++; else this.present_(dev); if (this.timing) this.gl.finish(); this.stats.presentMs = (this.stats.presentMs || 0) + performance.now() - T0; }
   present_(dev) {
     const gl = this.gl; this.size(dev.backbuffer.w, dev.backbuffer.h); this.stats.frames++;
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
@@ -95,9 +97,10 @@ export class GLBackend {
     const gl = this.gl, m = this.emu.mem.u8; gl.bindTexture(gl.TEXTURE_2D, t); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     o.surfaces.forEach((s, lv) => {
       const src = m.subarray(s.mem, s.mem + s.size); const f = s.fmt;
-      if (f === 21 || f === 22) { const out = new Uint8Array(s.w * s.h * 4); const n = s.w * s.h;
-        for (let i = 0; i < n; i++) { const j = i * 4; out[j] = src[j + 2]; out[j + 1] = src[j + 1]; out[j + 2] = src[j]; out[j + 3] = f === 22 ? 255 : src[j + 3]; }
-        gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s.w, s.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, out); }
+      if (f === 21 || f === 22) { // BGRA en memoria: se sube tal cual y el shader reordena (sin copia en JS)
+        t.swz = f === 22 ? 2 : 1;
+        if (t.alloc?.[lv] === s.w + 'x' + s.h) gl.texSubImage2D(gl.TEXTURE_2D, lv, 0, 0, s.w, s.h, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        else { gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s.w, s.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, src); (t.alloc ??= [])[lv] = s.w + 'x' + s.h; } }
       else if (f === 20) { const n = s.w * s.h; const out = new Uint8Array(n * 4); for (let i = 0; i < n; i++) { out[i * 4] = src[i * 3 + 2]; out[i * 4 + 1] = src[i * 3 + 1]; out[i * 4 + 2] = src[i * 3]; out[i * 4 + 3] = 255; }
         gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s.w, s.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, out); }
       else if (f === 23) gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGB565, s.w, s.h, 0, gl.RGB, gl.UNSIGNED_SHORT_5_6_5, new Uint16Array(src.buffer, src.byteOffset, s.w * s.h).slice());
@@ -118,7 +121,7 @@ export class GLBackend {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag === 1 ? gl.NEAREST : gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip === 0 ? (min === 1 ? gl.NEAREST : gl.LINEAR) : mip === 1 ? (min === 1 ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_NEAREST) : (min === 1 ? gl.NEAREST_MIPMAP_LINEAR : gl.LINEAR_MIPMAP_LINEAR));
   }
-  draw(dev, kind, a) { const T0 = performance.now(); try { return this.draw_(dev, kind, a); } finally { if (this.timing) { this.gl.finish(); this.stats.drawMs = (this.stats.drawMs || 0) + performance.now() - T0; } } }
+  draw(dev, kind, a) { if (this.noDraw) { this.stats.draws++; return; } const T0 = performance.now(); try { return this.draw_(dev, kind, a); } finally { if (this.timing) this.gl.finish(); this.stats.drawMs = (this.stats.drawMs || 0) + performance.now() - T0; } }
   draw_(dev, kind, a) {
     const gl = this.gl, e = this.emu, m = e.mem.u8; this.size(dev.backbuffer.w, dev.backbuffer.h);
     if (dev.vs >= 0x10000) { this.stats.skipped.vshader = (this.stats.skipped.vshader || 0) + 1; return; } // vertex shaders: pendiente
@@ -143,11 +146,13 @@ export class GLBackend {
       if (off !== undefined) { gl.enableVertexAttribArray(3 + k); gl.vertexAttribPointer(3 + k, 2, gl.FLOAT, false, stride, off); } else { gl.disableVertexAttribArray(3 + k); gl.vertexAttrib2f(3 + k, 0, 0); } }
     const u = this.u; gl.uniform1i(u.uRHW, L.rhw ? 1 : 0); gl.uniform4f(u.uScreen, dev.backbuffer.w, dev.backbuffer.h, 0, 0); gl.uniform1i(u.uHasDiff, L.diff >= 0 ? 1 : 0);
     if (!L.rhw) gl.uniformMatrix4fv(u.uWVP, false, wvp(dev));
+    const sw = [0, 0];
     for (let k = 0; k < 2; k++) { const ts = dev.tss[k]; const C = [ts.get(TSS.COLOROP) ?? (k === 0 ? 4 : 1), ts.get(TSS.COLORARG1) ?? 2, ts.get(TSS.COLORARG2) ?? 1];
       const A = [ts.get(TSS.ALPHAOP) ?? (k === 0 ? 2 : 1), ts.get(TSS.ALPHAARG1) ?? 2, ts.get(TSS.ALPHAARG2) ?? 1];
       gl.uniform3i(k ? u.uC1 : u.uC0, ...C); gl.uniform3i(k ? u.uA1 : u.uA0, ...A);
       gl.activeTexture(gl.TEXTURE0 + k); const tex = dev.tex[k] ? this.texture(dev.tex[k]) : null; gl.bindTexture(gl.TEXTURE_2D, tex || this.white); if (tex) this.sampler(dev, k);
-      gl.uniform1i(k ? u.uHas1 : u.uHas0, tex ? 1 : 0); }
+      gl.uniform1i(k ? u.uHas1 : u.uHas0, tex ? 1 : 0); sw[k] = tex ? (tex.swz || 0) : 0; }
+    gl.uniform2i(u.uSw, sw[0], sw[1]);
     const tf = dev.rs.get(RS.TEXTUREFACTOR) ?? 0xffffffff; gl.uniform4f(u.uTF, ((tf >> 16) & 255) / 255, ((tf >> 8) & 255) / 255, (tf & 255) / 255, ((tf >>> 24) & 255) / 255);
     gl.uniform1i(u.uAlphaTest, dev.rs.get(RS.ALPHATESTENABLE) ? 1 : 0); gl.uniform1i(u.uAlphaFunc, dev.rs.get(RS.ALPHAFUNC) ?? 8); gl.uniform1f(u.uAlphaRef, dev.rs.get(RS.ALPHAREF) ?? 0);
     this.state(dev);

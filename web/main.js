@@ -6,7 +6,7 @@ const params = new URLSearchParams(location.search); const snap = params.get('sn
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 const off = canvas.transferControlToOffscreen();
 let W = 800, H = 600;
-worker.postMessage({ type: 'start', canvas: off, snap }, [off]);
+worker.postMessage({ type: 'start', canvas: off, snap, opts: { nodraw: params.has('nodraw') } }, [off]);
 const addLog = (t) => { const d = document.createElement('div'); d.textContent = t; logEl.append(d); while (logEl.childNodes.length > 200) logEl.firstChild.remove(); logEl.scrollTop = 1e9; };
 window.f1c = { worker, lastStats: null, halted: null, ready: false, logs: [] };
 worker.onmessage = (ev) => { const m = ev.data;
@@ -15,7 +15,7 @@ worker.onmessage = (ev) => { const m = ev.data;
   else if (m.type === 'ready') { W = m.w; H = m.h; window.f1c.ready = true; canvas.focus(); }
   else if (m.type === 'title') document.title = m.text + ' — F1C CMT Web';
   else if (m.type === 'log') { window.f1c.logs.push(m.text); addLog(m.text); }
-  else if (m.type === 'stats') { window.f1c.lastStats = m; stats.textContent = `${m.mips.toFixed(1)} MIPS · ${m.fps.toFixed(1)} fps · ${m.files} archivos`; }
+  else if (m.type === 'stats') { window.f1c.lastStats = m; stats.textContent = `${m.fps.toFixed(1)} fps · ${m.mips.toFixed(0)} MIPS · emu ${m.emuMs.toFixed(1)} ms + gráficos ${m.glMs.toFixed(1)} ms por cuadro`; }
   else if (m.type === 'halt') { window.f1c.halted = m.report; status.hidden = false; status.textContent = 'El emulador se detuvo (ver registro)'; addLog(m.report); }
   else if (m.type === 'shot') window.f1c.shot = m.blob;
   else if (m.type === 'probe') window.f1c.probe = m.data;

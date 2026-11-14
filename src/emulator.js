@@ -47,8 +47,8 @@ export class Emulator {
     this.vfs = new VFS();
     this.thunks = [];           // índice -> {dll, name, impl}
     this.thunkByName = new Map();
-    this.apiTrace = [];          // últimas llamadas
-    this.apiCounts = new Map();
+    this._ring = Array.from({ length: 64 }, () => ({ name: null, ret: 0, n: 0, args: new Array(8).fill(0), result: undefined, note: undefined })); this._ringPos = 0; // últimas llamadas
+    this._argv = []; this._apiBase = new Map();
     this.traceApis = true;
     this.maxApiLog = 400;
     this.apiLogged = 0;
@@ -67,6 +67,7 @@ export class Emulator {
     // las proporciones que el juego espera entre trabajo y tiempo (títulos, demos, timeouts).
     this.hooks = new Map(); // eip -> fn(cpu) (ver addHook)
     this.jit = new BlockCache(this);
+    this.cpu.callHook = (e) => this.hooks.get(e)(this.cpu); // las regiones del JIT llaman a los aceleradores sin salir
     this.useJit = true; // false = intérprete puro (para comparar)
     this.clockMode = 'virtual';
     this.instrPerMs = 90000;
@@ -81,7 +82,7 @@ export class Emulator {
   // ejecutar el juego hasta ese instante (waitUntil).
   // Hook de ejecución en `eip` (debe ser inicio de bloque, p.ej. la entrada de una función).
   // fn(cpu) se ejecuta antes de la instrucción; si devuelve false, no se ejecuta el bloque (fn fija cpu.eip).
-  addHook(eip, fn) { this.hooks.set(eip >>> 0, fn); this.jit.forget(eip >>> 0); }
+  addHook(eip, fn) { this.hooks.set(eip >>> 0, fn); this.jit.forget(eip >>> 0); this.jit.clear(); } // las regiones pueden contener eip
   removeHook(eip) { this.hooks.delete(eip >>> 0); this.jit.forget(eip >>> 0); }
   stepInterp() { const h = this.hooks.size && this.hooks.get(this.cpu.eip); if (h && h(this.cpu) === false) return; this.cpu.step(); }
 
@@ -294,12 +295,14 @@ export class Emulator {
     const ret = m.r32(sp);
     const impl = t.impl;
     const nArgs = impl ? (impl.cdecl ? 12 : impl.n) : 8;
-    const args = [];
-    for (let i = 0; i < nArgs; i++) { try { args.push(m.r32(sp + 4 + i * 4)); } catch { args.push(0); } }
-    const label = `${t.dll === 'COM' ? '' : t.dll.replace('.DLL', '') + '!'}${t.name}`;
-    this.apiCounts.set(label, (this.apiCounts.get(label) || 0) + 1);
-    const entry = { name: label, ret, args: args.slice(0, impl ? nArgs : 6), result: undefined };
-    this.apiTrace.push(entry); if (this.apiTrace.length > 60) this.apiTrace.shift();
+    const args = this._argv; args.length = nArgs;
+    for (let i = 0; i < nArgs; i++) { const a = (sp + 4 + i * 4) >>> 0; args[i] = a < m.size ? m.r32(a) : 0; }
+    const label = t.label || (t.label = `${t.dll === 'COM' ? '' : t.dll.replace('.DLL', '') + '!'}${t.name}`);
+    t.count = (t.count || 0) + 1;
+    // traza circular de las últimas 64 llamadas (objetos reutilizados: sin basura por llamada)
+    const entry = this._ring[this._ringPos = (this._ringPos + 1) & 63];
+    entry.name = label; entry.ret = ret; entry.n = nArgs; entry.result = undefined; entry.note = undefined;
+    for (let i = 0; i < 8; i++) entry.args[i] = i < nArgs ? args[i] : 0;
     if (!impl) {
       throw new HaltSignal(`API no implementada: ${t.dll}!${t.name}`, {
         api: `${t.dll}!${t.name}`, caller: ret,
@@ -315,13 +318,19 @@ export class Emulator {
     entry.result = c.r[0];
     if (this.traceApis && this.apiLogged < this.maxApiLog && !impl.quiet) {
       this.apiLogged++;
-      this.log('API', `${label}(${entry.args.map((a) => hex(a, 1)).join(', ')}) = ${hex(c.r[0], 1)}  [ret ${hex(ret)}]${entry.note ? ' ' + entry.note : ''}`);
+      this.log('API', `${label}(${entry.args.slice(0, Math.min(nArgs, 8)).map((a) => hex(a, 1)).join(', ')}) = ${hex(c.r[0], 1)}  [ret ${hex(ret)}]${entry.note ? ' ' + entry.note : ''}`);
       if (this.apiLogged === this.maxApiLog) this.log('API', `(límite de ${this.maxApiLog} líneas de traza alcanzado; se siguen contando llamadas)`);
     }
     c.r[4] = (sp + 4 + (impl.cdecl ? 0 : impl.n * 4)) >>> 0;
     c.eip = ret;
   }
-  note(s) { const e = this.apiTrace[this.apiTrace.length - 1]; if (e) e.note = (e.note ? e.note + ' ' : '') + s; }
+  // últimas llamadas a API (de la más vieja a la más nueva)
+  get apiTrace() { const out = []; for (let i = 1; i <= 64; i++) { const e = this._ring[(this._ringPos + i) & 63]; if (e.name) out.push(e); } return out; }
+  set apiTrace(v) {}
+  // contador de llamadas por API (base restaurada de una instantánea + contadores por thunk)
+  get apiCounts() { const mp = new Map(this._apiBase || []); for (const t of this.thunks) if (t.count) { const l = t.label || `${t.dll === 'COM' ? '' : t.dll.replace('.DLL', '') + '!'}${t.name}`; mp.set(l, (mp.get(l) || 0) + t.count); } return mp; }
+  set apiCounts(v) { this._apiBase = v instanceof Map ? v : new Map(); }
+  note(s) { const e = this._ring[this._ringPos]; if (e) e.note = (e.note ? e.note + ' ' : '') + s; }
 
   callGuest(addr, args, limit = 200_000_000) {
     const c = this.cpu;

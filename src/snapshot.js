@@ -5,7 +5,7 @@ import { Emulator, MODULES } from './emulator.js';
 import { comTable as d3dTable } from './win32/d3d8.js';
 import { comTable as diTable } from './win32/dinput8.js';
 import { serialize, deserialize } from './serial.js';
-const SKIP = new Set(['logFn', 'host', 'mem', 'cpu', 'jit', 'vfs', 'thunks', 'thunkByName', 'keyEvent', 'ddPaletteOf', 'scanout', 'apiTrace', 'onPresent', 'd3dBackend', 'audioHost', 'joyState', 'keys', 'mouse']);
+const SKIP = new Set(['logFn', 'host', 'mem', 'cpu', 'jit', 'vfs', 'thunks', 'thunkByName', 'keyEvent', 'ddPaletteOf', 'scanout', 'apiTrace', '_ring', '_ringPos', '_argv', 'onPresent', 'd3dBackend', 'audioHost', 'joyState', 'keys', 'mouse']);
 export function take(emu) {
   const m = emu.mem, c = emu.cpu, f = c.fpu;
   let pages = 0; for (let p = 0; p < m.size; p += 4096) if (!isZero(m.u8, p)) pages++;

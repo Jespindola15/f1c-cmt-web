@@ -14,7 +14,13 @@ async function go(variant) {
   if (WHAT === 'regs') emu.cacheRegs = variant;
   if (WHAT === 'jit') emu.useJit = variant;
   if (WHAT === 'accel' && variant) { const { installAccel } = await import('../src/accel.js'); installAccel(emu); }
+  if (process.env.FRAMES) { let fr = 0; const K = Number(process.env.FRAMES); emu.onPresent = () => { if (++fr >= K) emu.yieldRequested = true; emu.stopFrames = fr >= K; };
+    const t = Date.now(); while (!emu.stopFrames) { const r = emu.run(5e6); if (r.status !== 'running' && r.status !== 'yield') { console.log(r.report?.text); break; } }
+    return finishState(emu, variant, t); }
   const t = Date.now(); const end = target || emu.cpu.icount + Number(N); while (emu.cpu.icount < end) { const r = emu.run(Math.min(5e6, end - emu.cpu.icount)); if (r.status !== 'running' && r.status !== 'yield') { console.log(r.report?.text); break; } }
+  return finishState(emu, variant, t);
+}
+function finishState(emu, variant, t) {
   const c = emu.cpu, u = emu.mem.u32; let h = 0; for (let i = 0; i < u.length; i++) h = (Math.imul(h, 31) + u[i]) | 0;
   const st = { icount: c.icount, eip: c.eip.toString(16), r: [...c.r].map((x) => x.toString(16)).join(' '), fpu: [...c.fpu.st].join(','), top: c.fpu.top, mm: [...new Uint32Array(c.simd.mbuf)].join(','), xmm: [...new Uint32Array(c.simd.xbuf)].join(','), mem: h >>> 0 };
   console.log(variant ? 'con   ' : 'sin   ', `${((Date.now() - t) / 1000).toFixed(1)}s`, st.icount, st.eip, st.mem.toString(16)); return st;

@@ -485,7 +485,7 @@ export function compileRegion(emu, entry) {
   while (queue.length && decs.size < REGION_BLOCKS && instrs < REGION_INSTRS) {
     const e = queue.shift() >>> 0;
     if (decs.has(e) || (e >= 0x00100000 && e < 0x00110000) || e < 0x1000) continue;
-    if (e !== entry && hooks && hooks.has(e)) continue;
+    if (e !== entry && hooks && hooks.has(e)) { decs.set(e, { hook: true, list: [], succ: [], dyn: true }); continue; }
     let d; try { d = blockDecode(emu, e); } catch { continue; }
     if (!d.list.length) continue;
     decs.set(e, d); instrs += d.list.length;
@@ -496,10 +496,12 @@ export function compileRegion(emu, entry) {
   const lin = new Map(); for (const e of decs.keys()) lin.set(e, 0);
   const outOf = (d) => { if (d.dyn) return F_ALL; let o = 0; for (const t of d.succ) o |= decs.has(t) ? lin.get(t) : F_ALL; return o; };
   for (let changed = true, guard = 0; changed && guard < 100; guard++) { changed = false;
-    for (const [e, d] of decs) { const v = liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
+    for (const [e, d] of decs) { const v = d.hook ? F_ALL : liveIn(d, outOf(d)); if (v !== lin.get(e)) { lin.set(e, v); changed = true; } } }
   const pages = new Set(); let compiled = 0, fallbacks = 0, n = 0;
   let cases = '';
   for (const [e, d] of decs) {
+    // función acelerada (hook): se llama sin salir de la región; si pide ejecutar el código original, se sale
+    if (d.hook) { cases += `case ${e}:{if(c.callHook(${e})!==false){c.eip=${e};return;}}continue;`; continue; }
     const b = blockSource(emu, e, d, emu.regionFlags === false ? F_ALL : outOf(d));
     for (const p of b.pages) pages.add(p); compiled += b.compiled; fallbacks += b.fallbacks; n += b.list.length;
     cases += `case ${e}:{c.icount+=${b.compiled};c.instrStart=${e};${b.body}}continue;`;
@@ -699,7 +701,7 @@ function inlineOps(src) {
 // salida (return / fin) y alrededor de las llamadas que leen o escriben registros (intérprete, imulSet, etc.).
 const SYNC = '(r[0]=$0,r[1]=$1,r[2]=$2,r[3]=$3,r[4]=$4,r[5]=$5,r[6]=$6,r[7]=$7)';
 const LOAD = '($0=r[0],$1=r[1],$2=r[2],$3=r[3],$4=r[4],$5=r[5],$6=r[6],$7=r[7])';
-const BARRIERS = ['c.step(', 'c.getReg(', 'c.setReg(', 'c.imulSet(', 'c.fpu.exec('];
+const BARRIERS = ['c.step(', 'c.getReg(', 'c.setReg(', 'c.imulSet(', 'c.fpu.exec(', 'c.callHook('];
 function cacheRegs(src) {
   let out = '', i = 0, k = 0;
   for (;;) {
