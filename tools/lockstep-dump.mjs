@@ -2,6 +2,7 @@
 // registros, x87, SIMD) y luego ejecuta N instrucciones de a una registrando EIP + registros + flags.
 //   node tools/lockstep-dump.mjs <juego> <START> <N> <salida>
 import fs from 'node:fs';
+import { patchConfig } from '../src/f1c-config.js';
 import { Emulator } from '../src/emulator.js';
 import { DiskVFS } from './disk-vfs.mjs';
 import { MODULES } from '../src/emulator.js';
@@ -9,7 +10,7 @@ const [GAME, START, N, OUT] = [process.argv[2], Number(process.argv[3]), Number(
 const emu = new Emulator({ log: () => {}, host: { deferPresent: true, present() {}, setMode() {}, setTitle() {}, audio: { play() {}, stop() {}, update() {}, setVolume() {}, setPan() {}, setRate() {} } } });
 emu.traceApis = false; emu.logFiles = false; emu.instrPerMs = 1e6; emu.qpcTurboMs = 0.02;
 emu.vfs = new DiskVFS(GAME); emu.vfs.index.delete('OPH.DLL'); emu.vfs.index.delete('VFXDRIVE.DLL');
-emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(new URL('./config/Config.ini', import.meta.url))) });
+emu.vfs.add('Config.ini', new TextEncoder().encode(patchConfig(fs.readFileSync(GAME + '/Config.ini', 'latin1'))));
 const ch = MODULES['KERNEL32.DLL'].CloseHandle; const orig = ch.fn;
 ch.fn = (e, h, ...a) => { const o = e.handles.get(h); if (o?.name && /MAINBK\.JPG$/i.test(o.name)) console.log(`CloseHandle JPG "${o.name}" en instr=${e.cpu.icount}`); return orig(e, h, ...a); };
 emu.loadMain(new Uint8Array(fs.readFileSync(GAME + '/F1C_CMT.exe')), 'F1C_CMT.EXE');

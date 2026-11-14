@@ -1,5 +1,20 @@
+# dependencias y compilación
 node_modules/
-tests/simd/cases2.json
-tests/simd/cases*.json
-snap/
 dist/
+# instantáneas de memoria y capturas: contienen datos/imágenes del juego (no publicar)
+snap/
+cap/
+tests/shots/
+tools/config/
+# casos generados de las pruebas SIMD (se regeneran con tests/simd/gen_cases*.py)
+tests/simd/cases*.json
+# archivos del juego por si se copian aquí por error
+*.MAS
+*.mas
+*.exe
+*.dll
+*.wav
+*.WAV
+*.mp3
+*.bik
+*.zip

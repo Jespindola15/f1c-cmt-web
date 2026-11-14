@@ -3,6 +3,7 @@
 // Variables: SECS (tope de tiempo), SAVE=dir (instantánea al final), LOAD=dir (continuar una instantánea),
 // MHZ (reloj virtual, 1000), TURBO (ms por lectura de QPC), TRACE_FROM, SWITCH_AT, OPH=1, CPU=mmx, --no-jit
 import fs from 'node:fs';
+import { patchConfig } from '../src/f1c-config.js';
 import { Emulator } from '../src/emulator.js';
 import { DiskVFS } from './disk-vfs.mjs';
 import { save, restore } from './snapshot.mjs';
@@ -14,7 +15,7 @@ let emu;
 if (E.LOAD) { emu = restore(E.LOAD, makeVfs, { log, host }); console.log(`[F1C] instantánea ${E.LOAD} restaurada en instr=${emu.cpu.icount}`); }
 else {
   emu = new Emulator({ log, host }); emu.vfs = makeVfs();
-  emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(new URL('./config/Config.ini', import.meta.url))) });
+  emu.vfs.add('Config.ini', new TextEncoder().encode(patchConfig(fs.readFileSync(GAME + '/Config.ini', 'latin1'))));
 }
 if (E.REAL) { emu.clockMode = 'real'; }
 emu.traceApis = false; emu.logFiles = false; emu.instrPerMs = Number(E.MHZ || 1000) * 1000; emu.qpcTurboMs = Number(E.TURBO ?? 0.02);

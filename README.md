@@ -57,6 +57,10 @@ En carrera el rendimiento **todavía no alcanza** 40–60 FPS: hace falta ~3× (
   `dist/` (≈390 KB) tiene sólo el emulador y `_headers` con COOP/COEP; **no incluye archivos de EA ni de CMT**.
   Si el operador tuviera autorización para distribuir los archivos, `CONTENT_BASE=https://…/ node tools/build-web.mjs`
   agrega `config.json` y el juego los descarga bajo demanda (p.ej. desde R2) en lugar de importarlos.
+- **Publicar en Netlify (desde GitHub):** subir el repositorio a GitHub → en Netlify *Add new site → Import an
+  existing project* → elegir el repositorio. `netlify.toml` ya configura todo: comando `node tools/build-web.mjs`,
+  carpeta `dist`, Node 20 y los encabezados COOP/COEP. No hace falta instalar dependencias.
+- **Probar `dist/` en la PC:** `npm run build` y `npm run serve` → http://localhost:8800/
 - **Desarrollo local:** `node tools/dev-server.mjs "<carpeta del juego>" 8150 <carpeta instantáneas>` (`?snap=` para diagnóstico).
 
 ## Cambios respecto del núcleo de Daytona

@@ -1,12 +1,13 @@
 // Muestreo: cada N instrucciones registra EIP y la última API, para ver dónde se va el tiempo.
 import fs from 'node:fs';
+import { patchConfig } from '../src/f1c-config.js';
 import { Emulator } from '../src/emulator.js';
 import { DiskVFS } from './disk-vfs.mjs';
 const GAME = process.argv[2]; const max = Number(process.argv[3] || 3e9); const from = Number(process.argv[4] || 1e9);
 const emu = new Emulator({ log: () => {}, host: { deferPresent: true, present() {}, setMode() {}, setTitle() {}, audio: { play() {}, stop() {}, update() {}, setVolume() {}, setPan() {}, setRate() {} } } });
 emu.traceApis = false; emu.logFiles = false; emu.instrPerMs = 1e6; emu.qpcTurboMs = 0.02;
 emu.vfs = new DiskVFS(GAME); emu.vfs.index.delete('OPH.DLL'); emu.vfs.index.delete('VFXDRIVE.DLL');
-emu.vfs.files.set('CONFIG.INI', { name: 'Config.ini', data: new Uint8Array(fs.readFileSync(new URL('./config/Config.ini', import.meta.url))) });
+emu.vfs.add('Config.ini', new TextEncoder().encode(patchConfig(fs.readFileSync(GAME + '/Config.ini', 'latin1'))));
 emu.loadMain(new Uint8Array(fs.readFileSync(GAME + '/F1C_CMT.exe')), 'F1C_CMT.EXE');
 const hist = new Map(); const apis = new Map(); let lastPresents = 0;
 emu.onPresent = (d) => console.log(`[FRAME] ${d.frame} en instr=${emu.cpu.icount}`);
