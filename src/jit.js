@@ -732,7 +732,9 @@ function inlineOps(src) {
   };
   const body = rewrite(src);
   if (!n && body === src) return src;
-  let decl = 'const U32=m.u32,U16=m.u16,F32=m.f32a,F64=m.f64a,CP=m.codePages,FW=m.noFastW!==true,FP=c.fpu,ST=FP.st,TG=FP.tagEmpty;';
+  const C = [['U32', 'm.u32'], ['U16', 'm.u16'], ['F32', 'm.f32a'], ['F64', 'm.f64a'], ['CP', 'm.codePages'], ['FW', 'm.noFastW!==true'], ['FP', 'c.fpu'], ['ST', 'FP.st'], ['TG', 'FP.tagEmpty']];
+  const usedC = C.filter(([nm]) => new RegExp('\\b' + nm + '\\b').test(body) || (nm === 'FP' && /\b(ST|TG)\b/.test(body)));
+  let decl = usedC.length ? 'const ' + usedC.map(([nm, v]) => `${nm}=${v}`).join(',') + ';' : '';
   if (n) decl += 'let ' + Array.from({ length: n }, (_, k) => `_t${k}`).join(',') + ';';
   return decl + body;
 }
@@ -756,11 +758,16 @@ function cacheRegs(src) {
   }
   out = wrapRegWrites(out);
   out = out.replace(/\br\[([0-7])\]/g, (m, d) => '$' + d).replace(/return;/g, '{@SYNC@;return;}');
+  // sólo se cargan los registros usados y sólo se vuelcan los escritos
+  const used = [], wr = [];
+  for (let d = 0; d < 8; d++) { if (out.includes('$' + d)) used.push(d); if (new RegExp('\\$' + d + '=(?!=)').test(out)) wr.push(d); }
   const fp = out.includes('FP.top') || out.includes('c.fpu.top');
   if (fp) out = out.split('FP.top').join('$T').split('c.fpu.top').join('$T');
-  out = out.split('@SYNC@').join(fp ? SYNC.slice(0, -1) + ',c.fpu.top=$T)' : SYNC).split('@LOAD@').join(fp ? LOAD.slice(0, -1) + ',$T=c.fpu.top)' : LOAD);
-  const decl = `let $0=r[0],$1=r[1],$2=r[2],$3=r[3],$4=r[4],$5=r[5],$6=r[6],$7=r[7]${fp ? ',$T=c.fpu.top' : ''}` + (k ? ',' + Array.from({ length: k }, (_, j) => `_rq${j}`).join(',') : '') + ';';
-  return decl + out + `;${fp ? SYNC.slice(0, -1) + ',c.fpu.top=$T)' : SYNC};`;
+  const sync = '(' + [...wr.map((d) => `r[${d}]=$${d}`), ...(fp ? ['c.fpu.top=$T'] : []), '0'].join(',') + ')';
+  const load = '(' + [...used.map((d) => `$${d}=r[${d}]`), ...(fp ? ['$T=c.fpu.top'] : []), '0'].join(',') + ')';
+  out = out.split('@SYNC@').join(sync).split('@LOAD@').join(load);
+  const vars = [...used.map((d) => `$${d}=r[${d}]`), ...(fp ? ['$T=c.fpu.top'] : []), ...Array.from({ length: k }, (_, j) => `_rq${j}`)];
+  return (vars.length ? `let ${vars.join(',')};` : '') + out + `;${sync};`;
 }
 
 // `r[k]=EXPR` -> `r[k]=(EXPR)>>>0`: con locales hay que normalizar a uint32 como hacía el Uint32Array
