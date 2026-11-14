@@ -2,7 +2,7 @@
 import { keyFor } from './keymap.js';
 const $ = (id) => document.getElementById(id);
 const canvas = $('screen'), status = $('status'), stats = $('stats'), logEl = $('log');
-const params = new URLSearchParams(location.search); const snap = params.get('snap') || 'menu';
+const params = new URLSearchParams(location.search); const snap = params.get('snap') || 'menu-principal';
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 const off = canvas.transferControlToOffscreen();
 let W = 800, H = 600;

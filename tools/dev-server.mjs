@@ -4,7 +4,8 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
+import { fileURLToPath } from 'node:url';
+const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const GAME = path.resolve(process.argv[2] || '.'); const PORT = Number(process.argv[3] || 8150);
 const SNAP = process.argv[4] ? path.resolve(process.argv[4]) : null; // carpeta de instantáneas (opcional): /snap/<nombre>/state.bin|mem.bin
 const SKIP = /^(CMTSeasonData\.zip|Audio[\\/]Vehicle\.zip|CMTSeasonData[\\/]Circuits\.zip|SelectDirectXInstaller|Support|DrivingSchool|CMTLOG|Src|Permissions|Shaders|Telemetry)/i;
@@ -25,7 +26,7 @@ http.createServer((req, res) => {
     if (url.startsWith('/snap/') && SNAP) { file = path.join(SNAP, url.slice(6)); if (!file.startsWith(SNAP)) throw new Error('ruta'); }
     else if (url.startsWith('/game/')) { file = path.join(GAME, url.slice(6)); if (!file.startsWith(GAME)) throw new Error('ruta'); }
     else { file = path.join(ROOT, url === '/' ? 'web/index.html' : url); if (!file.startsWith(ROOT)) throw new Error('ruta'); }
-    const data = fs.readFileSync(file);
-    res.writeHead(200, { ...H, 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Content-Length': data.length }); res.end(data);
+    const st = fs.statSync(file); if (!st.isFile()) throw new Error('no es archivo');
+    res.writeHead(200, { ...H, 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Content-Length': st.size }); fs.createReadStream(file).pipe(res);
   } catch (e) { res.writeHead(404, H); res.end('404 ' + url); }
 }).listen(PORT, () => console.log(`F1C CMT Web en http://localhost:${PORT}/  (juego: ${GAME})`));
