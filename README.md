@@ -33,6 +33,7 @@ Todavía **no** corre en Chrome ni dibuja: falta el dispositivo Direct3D 8 → W
 | Regiones (switch sobre EIP), flags entre bloques, registros en locales | 31 | 38,6 |
 | Pila x87 en locales, despacho por índice denso | 45 | 47,5 |
 | Memoria en WebAssembly.Memory + blit con color clave en WASM SIMD | 49 | 50 |
+| Máscara única de alineación/límite; sólo registros usados | 52 | 52,5 |
 
 Cada cuadro del menú cuesta ~19,6 M instrucciones x86 (iluminación por vértice del auto en software + composición
 de la interfaz). Verificación: `tests/jit_equiv.mjs` (JIT optimizado vs intérprete: registros, FPU, MMX/XMM y hash de
