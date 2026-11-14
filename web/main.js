@@ -26,7 +26,10 @@ async function boot() {
   const cfg = await fetch('/config.json').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   // Origen de contenido autorizado (R2/HTTPS): arranque automático con descarga y caché. ?import fuerza la copia propia.
   const content = params.get('content') || cfg.contentBase;
-  if (content && !params.has('import') && !params.has('setup')) return startGame({ source: { kind: 'net', base: new URL(content, location.href).href } });
+  // clave de acceso personal (?key=…): se guarda en este navegador y se quita de la barra de direcciones
+  if (params.get('key')) { try { localStorage.setItem('f1cKey', params.get('key')); } catch {} const u = new URL(location.href); u.searchParams.delete('key'); history.replaceState(null, '', u); }
+  let key = ''; try { key = localStorage.getItem('f1cKey') || ''; } catch {}
+  if (content && !params.has('import') && !params.has('setup')) return startGame({ source: { kind: 'net', base: new URL(content, location.href).href, key } });
   const idx = await readIndex();
   if (idx) {
     if (params.has('setup')) return askImport(idx);
@@ -71,6 +74,9 @@ function onWorker(ev) { const m = ev.data;
   else if (m.type === 'title') document.title = m.text + ' — F1C CMT Web';
   else if (m.type === 'log') { window.f1c.logs.push(m.text); addLog(m.text); }
   else if (m.type === 'stats') { window.f1c.lastStats = m; stats.textContent = `${m.fps.toFixed(1)} fps · ${m.mips.toFixed(0)} MIPS · emu ${m.emuMs.toFixed(1)} ms + gráficos ${m.glMs.toFixed(1)} ms · RAM emulada ${m.heapMB} MB`; }
+  else if (m.type === 'needKey') { panel.show('Acceso restringido', 'Este sitio carga el juego sólo para usuarios autorizados. Pegá tu clave de acceso (te la da quien administra el sitio).');
+    const inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'clave de acceso'; inp.style.cssText = 'padding:8px;border-radius:6px;border:1px solid #444;background:#151518;color:#eee;width:260px';
+    $('pbtns').append(inp); panel.button('Entrar', () => { try { localStorage.setItem('f1cKey', inp.value.trim()); } catch {} location.reload(); }); }
   else if (m.type === 'halt') { window.f1c.halted = m.report; panel.show('El emulador se detuvo', 'Detalle en el registro de abajo.'); addLog(m.report); panel.button('Volver a cargar', () => location.reload()); }
   else if (m.type === 'shot') window.f1c.shot = m.blob;
   else if (m.type === 'probe') window.f1c.probe = m.data;

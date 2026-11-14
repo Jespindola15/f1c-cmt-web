@@ -104,6 +104,44 @@ rclone copy contenido r2:MI-BUCKET/f1c          # o: npx wrangler r2 object put 
 - Prueba local: `node tools/make-content.mjs <juego> contenido` y `node tools/net-test.mjs contenido <juego>`
   (sirve los archivos desde tu instalación, sin copiarlos ni publicarlos).
 
+### Acceso sólo para usuarios autorizados (R2 privado + Worker) — recomendado
+
+En vez de un bucket público, el bucket queda **privado** y un Worker (`cloudflare/content-worker.js`) lo sirve sólo a
+quien tenga una clave y sólo al dominio del sitio (CORS limitado a `ALLOWED_ORIGINS`, preflight, `Range`, caché inmutable).
+
+**Por qué hoy aparece el selector de carpeta:** el sitio sólo arranca solo si el build genera `dist/config.json`, y
+`tools/build-web.mjs` lo escribe únicamente cuando existe la variable `CONTENT_BASE` en el entorno de build de Netlify.
+Sin ella (o si se agregó después del último deploy) no hay `config.json` y el launcher cae al modo importación.
+Comprobar: `https://TU-SITIO.netlify.app/config.json` debe devolver `{"contentBase":"…"}` (si da 404, falta la variable o el redeploy).
+
+Pasos (una vez):
+
+1. Cloudflare → R2 → crear bucket `f1c-cmt` (privado). R2 → *Manage API tokens* → token **Object Read & Write** sobre ese bucket.
+2. Subir el contenido (sólo con autorización), directo desde la instalación, sin copiarla:
+   ```
+   set R2_ACCOUNT_ID=…  & set R2_ACCESS_KEY_ID=…  & set R2_SECRET_ACCESS_KEY=…
+   node tools/make-content.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido
+   node tools/r2-upload.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido\manifest.json f1c-cmt f1c
+   ```
+   (omite los objetos que ya están con el mismo SHA-256; sube el manifiesto al final)
+3. Worker: en `cloudflare/wrangler.toml` poner `ALLOWED_ORIGINS="https://TU-SITIO.netlify.app"`, luego
+   ```
+   cd cloudflare && npx wrangler login && npx wrangler deploy
+   npx wrangler secret put ACCESS_KEYS        # p. ej. clave-juan,clave-ana (una por persona, revocables)
+   ```
+4. Netlify → Site configuration → Environment variables → `CONTENT_BASE = https://f1c-content.TU-SUBDOMINIO.workers.dev/`
+   (scope *Builds*) → Deploys → *Trigger deploy* → *Clear cache and deploy site*.
+5. Verificar: `node tools/check-origin.mjs https://f1c-content.….workers.dev/ https://TU-SITIO.netlify.app CLAVE --boot`
+6. Enlace para cada usuario: `https://TU-SITIO.netlify.app/?key=CLAVE` (la clave queda guardada en el navegador;
+   sin clave el sitio pide una, nunca el selector de carpeta).
+
+Prueba local del flujo completo con el Worker real (R2 simulado, sin publicar nada):
+`ACCESS_KEYS=k ALLOWED_ORIGINS=http://localhost:8812 node tools/worker-local.mjs contenido <juego> 8901` y
+`WORKER=1 ACCESS_KEYS=k URL='http://localhost:8812/?key=k' node tools/net-test.mjs contenido <juego>`.
+Resultado (14/11/2026): sin clave → "Acceso restringido" y 0 archivos servidos; con clave, caché vacía → 850 archivos
+(195 MB) verificados en ~8 s y el juego arranca hasta la pantalla de título; segunda visita sin `?key` → sólo el
+manifiesto, 0 archivos del juego, arranque directo. En ningún caso apareció el selector de carpeta.
+
 ## Cambios respecto del núcleo de Daytona
 
 - `src/simd.js` (nuevo): MMX, SSE, SSE2 completos para lo que usan el exe y las DLLs del mod; MXCSR con los 4 modos de redondeo exactos, NaN y ceros con signo como x86.

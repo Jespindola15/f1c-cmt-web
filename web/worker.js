@@ -35,11 +35,11 @@ async function netVfs(source) {
   const { NetCache } = await import('./netcache.js'); const P = await import('./pack.js');
   post('status', { text: 'Leyendo el manifiesto de contenido…' });
   let man; const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('f1c-net', { create: true });
-  try { const r = await fetch(base + 'manifest.json', { cache: 'no-cache' }); if (!r.ok) throw new Error('HTTP ' + r.status); man = await r.json();
+  try { const r = await fetch(base + 'manifest.json', { cache: 'no-cache', headers: source.key ? { 'X-F1C-Key': source.key } : {} }); if (r.status === 401 || r.status === 403) { const e = new Error('CLAVE: ' + (await r.text())); e.auth = true; throw e; } if (!r.ok) throw new Error('HTTP ' + r.status); man = await r.json();
     const w = await (await root.getFileHandle('manifest.json', { create: true })).createWritable(); await w.write(JSON.stringify(man)); await w.close(); }
-  catch (e) { try { man = JSON.parse(await (await (await root.getFileHandle('manifest.json')).getFile()).text()); post('log', { text: `[NET] sin conexión al origen (${e.message}); se usa el manifiesto guardado` }); } catch { throw new Error(`No se pudo leer ${base}manifest.json: ${e.message}`); } }
+  catch (e) { if (e.auth) throw e; try { man = JSON.parse(await (await (await root.getFileHandle('manifest.json')).getFile()).text()); post('log', { text: `[NET] sin conexión al origen (${e.message}); se usa el manifiesto guardado` }); } catch { throw new Error(`No se pudo leer ${base}manifest.json: ${e.message}`); } }
   if (man.format !== 'f1c-cmt-web/1') throw new Error('Manifiesto con formato desconocido');
-  const cache = await NetCache.open(base, (ev) => post('net', ev));
+  const cache = await NetCache.open(base, (ev) => post('net', ev), source.key || '');
   const entries = man.files.map((f) => ({ path: f.p, size: f.s, h: f.h, g: f.g }));
   const boot = entries.filter((e) => e.g === 'boot'); const missing = boot.filter((e) => !cache.has(e.h));
   const have = entries.filter((e) => cache.has(e.h)).reduce((a, e) => a + e.size, 0);
@@ -127,7 +127,7 @@ let statWork = 0, lastBoot = 0;
 const kick = new MessageChannel(); kick.port1.onmessage = () => loop();
 self.onmessage = (ev) => {
   const m = ev.data;
-  if (m.type === 'start') start(m).catch((e) => post('halt', { report: String(e.stack || e) }));
+  if (m.type === 'start') start(m).catch((e) => post(String(e.message || '').startsWith('CLAVE') ? 'needKey' : 'halt', { report: String(e.stack || e), message: String(e.message || e) }));
   else if (!emu) return;
   else if (m.type === 'key') { const [dik, vk] = m.k; emu.keys[dik] = m.down ? 1 : 0; (emu.state.diKeys ??= []).push([dik, m.down ? 0x80 : 0, Math.floor(emu.nowMs())]); emu.keyEvent(vk, m.down); }
   else if (m.type === 'mouse') emu.mouseEvent(m.x, m.y, m.button, m.down);

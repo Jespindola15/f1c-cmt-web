@@ -7,11 +7,11 @@
 import { sha256 } from '../src/sha256.js';
 export const fileUrl = (base, p) => base + 'files/' + p.split(/[\\/]/).map(encodeURIComponent).join('/');
 export class NetCache {
-  static async open(base, onEvent) {
+  static async open(base, onEvent, key = '') {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('f1c-net', { create: true });
     const data = await (await root.getFileHandle('data.bin', { create: true })).createSyncAccessHandle();
     const idxH = await (await root.getFileHandle('index.json', { create: true })).createSyncAccessHandle();
-    const c = new NetCache(); c.base = base; c.data = data; c.idxH = idxH; c.onEvent = onEvent || (() => {});
+    const c = new NetCache(); c.base = base; c.key = key; c.data = data; c.idxH = idxH; c.onEvent = onEvent || (() => {});
     let idx = {}; const n = idxH.getSize(); if (n) { const b = new Uint8Array(n); idxH.read(b, { at: 0 }); try { idx = JSON.parse(new TextDecoder().decode(b)); } catch { idx = {}; } }
     c.index = new Map(Object.entries(idx.files || {})); c.end = data.getSize();
     // si el índice apunta más allá del final (corte a mitad de escritura), descartar esas entradas
@@ -29,7 +29,7 @@ export class NetCache {
     this.onEvent({ type: 'net', path: entry.path, size: entry.size, phase: 'start' });
     let bytes = null, err = '';
     for (let attempt = 0; attempt < 3 && !bytes; attempt++) {
-      const x = new XMLHttpRequest(); x.open('GET', fileUrl(this.base, entry.path), false); x.responseType = 'arraybuffer';
+      const x = new XMLHttpRequest(); x.open('GET', fileUrl(this.base, entry.path), false); x.responseType = 'arraybuffer'; if (this.key) x.setRequestHeader('X-F1C-Key', this.key);
       try { x.send(); } catch (e) { err = String(e); continue; }
       if (x.status !== 200) { err = `HTTP ${x.status}`; continue; }
       const b = new Uint8Array(x.response);
@@ -51,7 +51,7 @@ export class NetCache {
         let ok = false, err = '';
         for (let attempt = 0; attempt < 3 && !ok; attempt++) {
           try {
-            const r = await fetch(fileUrl(this.base, e.path)); if (!r.ok) { err = `HTTP ${r.status}`; continue; }
+            const r = await fetch(fileUrl(this.base, e.path), { headers: this.key ? { 'X-F1C-Key': this.key } : {} }); if (!r.ok) { err = `HTTP ${r.status}`; continue; }
             const rd = r.body.getReader(); const buf = new Uint8Array(e.size); let got = 0;
             for (;;) { const { done: d, value } = await rd.read(); if (d) break; if (got + value.length > e.size) { err = 'tamaño distinto'; break; } buf.set(value, got); got += value.length; done += value.length; onProgress({ done, total, files, count: todo.length, path: e.path, mbps: done / 1048576 / ((performance.now() - t0) / 1000) }); }
             if (got !== e.size) { done -= got; err = err || 'tamaño distinto'; continue; }

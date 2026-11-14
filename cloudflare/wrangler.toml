@@ -1,0 +1,14 @@
+# Worker de contenido (delante de R2). Despliegue:
+#   cd cloudflare && npx wrangler deploy
+#   npx wrangler secret put ACCESS_KEYS     (claves separadas por coma: una por amigo)
+name = "f1c-content"
+main = "content-worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGINS = "https://CAMBIAR.netlify.app"
+PREFIX = "f1c"
+
+[[r2_buckets]]
+binding = "CONTENT"
+bucket_name = "f1c-cmt"
