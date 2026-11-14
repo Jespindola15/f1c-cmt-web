@@ -22,6 +22,11 @@ export { hex };
 
 import { ExitSignal, HaltSignal } from './win32/common.js';
 import * as F1C from './win32/f1c.js';
+import { D3D8 } from './win32/d3d8.js';
+import { DINPUT8 } from './win32/dinput8.js';
+import { MSS32 } from './win32/mss32.js';
+import { BINKW32 } from './win32/binkw32.js';
+import { WSOCK32 } from './win32/wsock32.js';
 export { ExitSignal, HaltSignal };
 
 export const MODULES = {
@@ -30,7 +35,7 @@ export const MODULES = {
 };
 // --- extensión F1C (experimental) ---
 Object.assign(MODULES['KERNEL32.DLL'], F1C.KERNEL32); Object.assign(MODULES['USER32.DLL'], F1C.USER32); Object.assign(MODULES['ADVAPI32.DLL'], F1C.ADVAPI32);
-Object.assign(MODULES, { 'SHELL32.DLL': F1C.SHELL32, 'AVIFIL32.DLL': F1C.AVIFIL32, 'D3D8.DLL': F1C.D3D8, 'MSS32.DLL': F1C.MSS32 });
+Object.assign(MODULES, { 'SHELL32.DLL': F1C.SHELL32, 'AVIFIL32.DLL': F1C.AVIFIL32, 'D3D8.DLL': D3D8, 'DINPUT8.DLL': DINPUT8, 'MSS32.DLL': MSS32, 'BINKW32.DLL': BINKW32, 'WSOCK32.DLL': WSOCK32 });
 
 export class Emulator {
   constructor({ log = console.log, host = null } = {}) {
@@ -209,7 +214,7 @@ export class Emulator {
     this.cpu.fsBase = TEB_ADDR;
     // pila
     const c = this.cpu;
-    c.r[4] = STACK_TOP - 16;
+    c.r[4] = STACK_TOP - 0x38; // F1C: ESP de entrada ≡ 4 (mod 16), como Windows (0x0012FFC4); D3DX alinea su espacio de trabajo
     c.r[5] = 0;
     c.push(0); // dirección de retorno falsa de BaseProcessStart
     m.w32(c.r[4], HOST_RETURN);

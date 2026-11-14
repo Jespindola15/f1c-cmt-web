@@ -19,7 +19,7 @@ export class CPU {
     this.mem = mem;
     this.r = new Uint32Array(8);
     this.eip = 0;
-    this.cf = 0; this.pf = 0; this.af = 0; this.zf = 0; this.sf = 0; this.of = 0; this.df = 0;
+    this.cf = 0; this.pf = 0; this.af = 0; this.zf = 0; this.sf = 0; this.of = 0; this.df = 0; this.acf = 0; this.idf = 0;
     this.fsBase = 0;
     this.parity = PARITY;
     this.fpu = new FPU(this);
@@ -85,11 +85,12 @@ export class CPU {
   // ---------- flags ----------
   szp(r, sz) { this.zf = r === 0 ? 1 : 0; this.sf = (r & SIGN[sz]) ? 1 : 0; this.pf = PARITY[r & 0xff]; }
   get eflags() {
-    return (this.cf | 2 | (this.pf << 2) | (this.af << 4) | (this.zf << 6) | (this.sf << 7) | (1 << 9) | (this.df << 10) | (this.of << 11)) >>> 0;
+    return (this.cf | 2 | (this.pf << 2) | (this.af << 4) | (this.zf << 6) | (this.sf << 7) | (1 << 9) | (this.df << 10) | (this.of << 11) | (this.acf << 18) | (this.idf << 21)) >>> 0;
   }
   set eflags(v) {
     this.cf = v & 1; this.pf = (v >> 2) & 1; this.af = (v >> 4) & 1; this.zf = (v >> 6) & 1;
     this.sf = (v >> 7) & 1; this.df = (v >> 10) & 1; this.of = (v >> 11) & 1;
+    this.acf = (v >> 18) & 1; this.idf = (v >> 21) & 1; // AC e ID: el software detecta 486/CPUID cambiándolos con pushfd/popfd
   }
   cond(cc) {
     switch (cc) {
@@ -411,7 +412,7 @@ export class CPU {
       case 0xa2: { // cpuid (F1C): CPU "moderna" con MMX+SSE+SSE2, sin SSE3/SSSE3/SSE4/AVX ni 3DNow!
         const leaf = r[EAX];
         if (leaf === 0) { r[EAX] = 1; r[EBX] = 0x756e6547; r[EDX] = 0x49656e69; r[ECX] = 0x6c65746e; }
-        else if (leaf === 1) { r[EAX] = 0x6f6; r[EBX] = 0; r[ECX] = 0; r[EDX] = 0x1 | 0x10 | 0x20 | 0x100 | 0x8000 | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26); }
+        else if (leaf === 1) { r[EAX] = 0x6f6; r[EBX] = 0; r[ECX] = 0; r[EDX] = (this.cpuidEdx ?? (0x1 | 0x10 | 0x20 | 0x100 | 0x8000 | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26))) >>> 0; }
         else if (leaf === 0x80000000) { r[EAX] = 0x80000001; r[EBX] = r[ECX] = r[EDX] = 0; }
         else { r[EAX] = 0; r[EBX] = 0; r[ECX] = 0; r[EDX] = 0; }
         return;

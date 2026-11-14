@@ -6,7 +6,7 @@
 //   0x02000000+ DLLs cargadas por LoadLibrary (con relocación)
 //   0x03000000  heap (HeapAlloc/VirtualAlloc/GlobalAlloc/superficies DirectDraw)
 //   0x0F000000-0x0FFF0000 pila del hilo principal
-export const MEM_SIZE = 0x10000000; // 256 MiB
+export const MEM_SIZE = 0x40000000; // 1 GiB (F1C CMT: texturas y pistas)
 export const TEB_ADDR = 0x00010000;
 export const PEB_ADDR = 0x00011000;
 export const SYS_ADDR = 0x00012000; // strings del sistema (cmdline, env, etc.)
@@ -15,8 +15,8 @@ export const THUNK_END = 0x00110000;
 export const HOST_RETURN = THUNK_END - 4; // dirección mágica: vuelta de callback a JS
 export const DLL_BASE = 0x02000000;
 export const HEAP_BASE = 0x03000000;
-export const HEAP_END = 0x0e000000;
-export const STACK_TOP = 0x0fff0000;
+export const HEAP_END = 0x3f000000;
+export const STACK_TOP = 0x3fff0000;
 export const STACK_SIZE = 0x00800000;
 
 export class MemFault extends Error {

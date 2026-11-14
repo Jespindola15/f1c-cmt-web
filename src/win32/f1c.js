@@ -1,56 +1,14 @@
 // f1c.js — extensión EXPERIMENTAL para probar F1C CMT 2025 sobre el núcleo de Daytona Web.
 // VFS respaldado por disco (solo lectura; las escrituras quedan en memoria), directorios y cwd reales,
 // y las APIs que F1C importa y Daytona no implementa. Direct3DCreate8 → objeto IDirect3D8 mínimo.
-import fs from 'node:fs';
-import path from 'node:path';
 import { api, stub, HaltSignal } from './common.js';
 
-export class DiskVFS {
-  constructor(root) {
-    this.root = root; this.cwd = ''; this.files = new Map(); this.index = new Map(); this.dirs = new Set(['']);
-    const walk = (d, rel) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const r = rel ? rel + '\\' + e.name : e.name; const key = r.toUpperCase();
-      if (e.isDirectory()) { this.dirs.add(key); walk(path.join(d, e.name), r); } else this.index.set(key, path.join(d, e.name)); } };
-    walk(root, ''); this.opened = new Map();
-  }
-  norm(p) {
-    p = String(p).replace(/\//g, '\\').toUpperCase();
-    const abs = /^[A-Z]:/.test(p) || p.startsWith('\\');
-    p = p.replace(/^[A-Z]:/, '');
-    if (!abs && this.cwd) p = this.cwd + '\\' + p;
-    const parts = [];
-    for (const s of p.split('\\')) { if (!s || s === '.') continue; if (s === '..') parts.pop(); else parts.push(s); }
-    if (abs && parts[0] === 'F1C') parts.shift();
-    return parts.join('\\');
-  }
-  add(p, data) { this.files.set(this.norm('\\F1C\\' + p), { name: p, data }); }
-  find(p) {
-    const n = this.norm(p);
-    if (this.files.has(n)) return this.files.get(n);
-    const hp = this.index.get(n);
-    if (!hp) return null;
-    const f = { name: path.basename(hp), data: new Uint8Array(fs.readFileSync(hp)) };
-    this.files.set(n, f); this.opened.set(n, f.data.length); return f;
-  }
-  isDir(p) { return this.dirs.has(this.norm(p)); }
-  create(p) { const n = this.norm(p); const f = { name: p, data: new Uint8Array(0) }; this.files.set(n, f); return f; }
-  list(pattern) {
-    const n = this.norm(pattern); const i = n.lastIndexOf('\\');
-    const dir = i >= 0 ? n.slice(0, i) : ''; let pat = n.slice(i + 1); if (pat === '*.*') pat = '*';
-    const re = new RegExp('^' + pat.replace(/[.+^${}()|[\]]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-    const out = new Map();
-    const pref = dir ? dir + '\\' : '';
-    const consider = (k, isDir) => { if (!k.startsWith(pref)) return; const rest = k.slice(pref.length); if (!rest || rest.includes('\\')) return;
-      if (re.test(rest)) out.set(rest, { name: rest, isDir, size: isDir ? 0 : (this.files.get(k)?.data.length ?? fs.statSync(this.index.get(k)).size) }); };
-    for (const k of this.dirs) consider(k, true);
-    for (const k of this.index.keys()) consider(k, false);
-    for (const k of this.files.keys()) consider(k, false);
-    return [...out.values()];
-  }
-}
 const fill = (emu, p, it) => { const m = emu.mem; m.fill(p, 0, 320); m.w32(p, it.isDir ? 0x10 : 0x80); m.w32(p + 32, it.size); m.writeCStr(p + 44, it.name, 260); };
 const ok1 = (n) => api(n, () => 1);
 export const KERNEL32 = {
+  // Reloj virtual (pruebas en Node): cada lectura del contador avanza qpcTurboMs, así las esperas activas terminan.
+  QueryPerformanceCounter: api(1, (emu, p) => { if (emu.clockMode === 'virtual' && emu.qpcTurboMs) emu.timeOffset += emu.qpcTurboMs;
+    const us = Math.floor(emu.nowMs() * 1000); emu.mem.w32(p, us >>> 0); emu.mem.w32(p + 4, Math.floor(us / 4294967296)); return 1; }, { quiet: true }),
   SetCurrentDirectoryA: api(1, (emu, p) => { const s = emu.mem.cstr(p); emu.note(`"${s}"`); const n = emu.vfs.norm(s); if (!emu.vfs.dirs.has(n)) return 0; emu.vfs.cwd = n; return 1; }),
   GetCurrentDirectoryA: api(2, (emu, n, buf) => emu.mem.writeCStr(buf, 'C:\\F1C' + (emu.vfs.cwd ? '\\' + emu.vfs.cwd : ''), n)),
   GetFullPathNameA: api(4, (emu, p, n, buf, pFile) => { const s = 'C:\\F1C\\' + emu.vfs.norm(emu.mem.cstr(p)); const k = emu.mem.writeCStr(buf, s, n); if (pFile) emu.mem.w32(pFile, buf + s.lastIndexOf('\\') + 1); return k; }),
@@ -59,7 +17,7 @@ export const KERNEL32 = {
     if (!list.length) { emu.lastError = 2; return 0xffffffff; } const h = emu.newHandle({ type: 'find', list, i: 0 }); fill(emu, out, list[0]); return h; }),
   FindNextFileA: api(2, (emu, h, out) => { const o = emu.handles.get(h); if (!o || ++o.i >= o.list.length) { emu.lastError = 18; return 0; } fill(emu, out, o.list[o.i]); return 1; }),
   GetFileInformationByHandle: api(2, (emu, h, p) => { const o = emu.handles.get(h); emu.mem.fill(p, 0, 52); emu.mem.w32(p, 0x80); emu.mem.w32(p + 36, o?.file ? o.file.data.length : 0); return 1; }),
-  IsProcessorFeaturePresent: api(1, (emu, f) => ([2, 3, 6, 8, 10, 12].includes(f) ? 1 : 0)), // MMX, SSE, SSE2 sí; 3DNow! (7) y SSE3 (13) no
+  IsProcessorFeaturePresent: api(1, (emu, f) => ((emu.cpuFeatures ?? [2, 3, 6, 8, 10, 12]).includes(f) ? 1 : 0)), // MMX, SSE, SSE2 sí; 3DNow! (7) y SSE3 (13) no
   CompareStringW: api(6, () => 2), GetLocaleInfoW: api(4, () => 0), SetEnvironmentVariableA: ok1(2),
   PeekNamedPipe: api(6, () => 0), CreateProcessA: api(10, (emu, app, cmd) => { emu.log('F1C', `CreateProcessA("${app ? emu.mem.cstr(app) : ''}", "${cmd ? emu.mem.cstr(cmd) : ''}") -> rechazado`); return 0; }), DuplicateHandle: ok1(7),
   RaiseException: api(4, (emu, c) => { throw new HaltSignal(`RaiseException 0x${(c >>> 0).toString(16)}`); }),
