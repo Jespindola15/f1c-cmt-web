@@ -14,7 +14,7 @@ const page = await browser.newPage({ viewport: { width: 1000, height: 860 } });
 page.on('console', (m) => console.log('[consola]', m.text()));
 page.on('pageerror', (e) => console.log('[error]', e.message));
 const t0 = Date.now(); const T = Number(SECS) * 1000;
-await page.goto(`http://localhost:${PORT}/`);
+await page.goto(`http://localhost:${PORT}/?snap=${process.env.SNAPNAME || "menu"}`);
 let last = '';
 const shot = async (name) => { if (process.env.PROBE) { await page.evaluate(() => window.f1c.worker.postMessage({ type: 'probe' })); await page.waitForFunction(() => window.f1c.probe, null, { timeout: 30000 }).catch(() => {}); console.log('[probe]', (await page.evaluate(() => window.f1c.probe) || '').slice(0, 1500)); }
   const url = await page.evaluate(async () => { window.f1c.shot = null; window.f1c.worker.postMessage({ type: 'shot' }); for (let i = 0; i < 100 && !window.f1c.shot; i++) await new Promise((r) => setTimeout(r, 100));

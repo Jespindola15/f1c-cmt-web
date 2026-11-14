@@ -254,6 +254,7 @@ export class CPU {
       case 0x9b: return; // fwait
       case 0x9c: this.push(this.eflags); return;
       case 0x9d: this.eflags = this.pop(); return;
+      case 0xd7: { const al = this.mem.r8((r[EBX] + (r[EAX] & 0xff) + this.segBase) >>> 0); r[EAX] = (r[EAX] & ~0xff) | al; return; } // XLAT
       case 0x9e: { const ah = (r[EAX] >>> 8) & 0xff; this.eflags = (this.eflags & ~0xd5) | (ah & 0xd5); return; }
       case 0x9f: this.setReg(1, 4, this.eflags & 0xff); return;
       case 0xa0: this.setReg(1, EAX, this.mem.r8((this.f32() + this.segBase) >>> 0)); return;

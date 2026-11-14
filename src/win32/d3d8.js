@@ -254,6 +254,7 @@ function d3d8Methods() {
     ];
 }
 export const D3D8 = {
+  DebugSetMute: api(0, () => 0), // export de d3d8.dll que D3DX busca con GetProcAddress (sin efecto en la versión retail)
   Direct3DCreate8: api(1, (emu, sdk) => {
     emu.log('D3D', `Direct3DCreate8(${sdk}) en instr=${emu.cpu.icount}`);
     emu.d3d = { objs: new Map(), stats: { textures: 0, texBytes: 0, locks: 0, bufLocks: 0, draws: 0, drawsByKind: {}, presents: 0, clears: 0, rs: 0, setTex: 0, copyRects: 0, vshaders: 0, pshaders: 0 }, formats: {}, texSeq: 0, bufSeq: 0 };

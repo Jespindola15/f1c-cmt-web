@@ -98,6 +98,8 @@ export class GLBackend {
       if (f === 21 || f === 22) { const out = new Uint8Array(s.w * s.h * 4); const n = s.w * s.h;
         for (let i = 0; i < n; i++) { const j = i * 4; out[j] = src[j + 2]; out[j + 1] = src[j + 1]; out[j + 2] = src[j]; out[j + 3] = f === 22 ? 255 : src[j + 3]; }
         gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s.w, s.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, out); }
+      else if (f === 20) { const n = s.w * s.h; const out = new Uint8Array(n * 4); for (let i = 0; i < n; i++) { out[i * 4] = src[i * 3 + 2]; out[i * 4 + 1] = src[i * 3 + 1]; out[i * 4 + 2] = src[i * 3]; out[i * 4 + 3] = 255; }
+        gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGBA8, s.w, s.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, out); }
       else if (f === 23) gl.texImage2D(gl.TEXTURE_2D, lv, gl.RGB565, s.w, s.h, 0, gl.RGB, gl.UNSIGNED_SHORT_5_6_5, new Uint16Array(src.buffer, src.byteOffset, s.w * s.h).slice());
       else if (f === 24 || f === 25 || f === 26) { const n = s.w * s.h; const out = new Uint16Array(n); const v = new Uint16Array(src.slice().buffer, 0, n);
         for (let i = 0; i < n; i++) { const x = v[i]; out[i] = f === 26 ? (((x << 4) & 0xfff0) | (x >> 12)) : (((x << 1) & 0xfffe) | (f === 24 ? 1 : (x >> 15))); }
