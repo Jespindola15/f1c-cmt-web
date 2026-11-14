@@ -24,7 +24,9 @@ async function boot() {
   if (miss.length) { panel.show('Navegador no compatible', `Hace falta Google Chrome (o Edge) actualizado. Falta: ${miss.join(', ')}.`); return; }
   if (params.get('snap')) return startGame({ snap: params.get('snap') });
   const cfg = await fetch('/config.json').then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
-  if (cfg.contentBase) return startGame({ source: { kind: 'remote', base: cfg.contentBase } }); // sólo si el sitio tiene autorización para servir los archivos
+  // Origen de contenido autorizado (R2/HTTPS): arranque automático con descarga y caché. ?import fuerza la copia propia.
+  const content = params.get('content') || cfg.contentBase;
+  if (content && !params.has('import') && !params.has('setup')) return startGame({ source: { kind: 'net', base: new URL(content, location.href).href } });
   const idx = await readIndex();
   if (idx) {
     if (params.has('setup')) return askImport(idx);
@@ -49,7 +51,8 @@ async function runImport(src) {
     else if (m.type === 'error') { w.terminate(); panel.show('No se pudo importar', m.message); panel.button('Reintentar', () => askImport(null)); } };
   w.postMessage(src);
 }
-let worker = null, W = 1024, H = 768;
+let worker = null, W = 1024, H = 768, netBusy = '';
+function showNet() { $('net').textContent = netBusy; $('net').hidden = !netBusy; }
 function startGame({ source, snap }) {
   panel.show('Arrancando F1 Challenge CMT 2025', 'El motor original corre emulado (x86 → JavaScript/WebAssembly). La primera vez tarda más: el juego genera sus cachés.');
   worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' }); window.f1c.worker = worker;
@@ -60,6 +63,8 @@ function startGame({ source, snap }) {
 function onWorker(ev) { const m = ev.data;
   if (m.type === 'status') { if (m.text) $('ptitle').textContent = m.text; }
   else if (m.type === 'progress') panel.progress(m.total ? m.got / m.total : 0, `${m.label}`);
+  else if (m.type === 'prefetch') panel.progress(m.total ? m.done / m.total : 1, m.finished ? 'Descarga completa' : `${(m.done / 1048576).toFixed(0)} / ${(m.total / 1048576).toFixed(0)} MB · ${m.files}/${m.count} archivos · ${m.mbps.toFixed(1)} MB/s · ${m.path}`);
+  else if (m.type === 'net') { if (m.phase === 'start') { netBusy = `Descargando ${m.path.split('\\').pop()} (${(m.size / 1048576).toFixed(1)} MB)…`; showNet(); } else if (m.phase === 'done') { netBusy = ''; showNet(); } else if (m.phase === 'error') addLog(`[NET] error ${m.path}: ${m.error}`); }
   else if (m.type === 'boot') panel.progress(Math.min(1, m.instr / 1.2e10), `Arranque: ${(m.instr / 1e9).toFixed(1)} mil millones de instrucciones x86 · ${m.files} archivos leídos`);
   else if (m.type === 'ready') { W = m.w; H = m.h; window.f1c.ready = true; }
   else if (m.type === 'firstFrame') { panel.hide(); canvas.focus(); }

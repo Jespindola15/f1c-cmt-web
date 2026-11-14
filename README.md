@@ -50,7 +50,7 @@ En carrera el rendimiento **todavía no alcanza** 40–60 FPS: hace falta ~3× (
 
 ## Jugar / publicar
 
-- **Jugadores:** entrar a la URL, *Elegir carpeta…* (la carpeta "F1 Challenge 2025 CMT"), esperar la copia (una sola
+- **Jugadores (sin origen configurado):** entrar a la URL, *Elegir carpeta…* (la carpeta "F1 Challenge 2025 CMT"), esperar la copia (una sola
   vez, ~3,7 GB en el almacenamiento privado del navegador) y el juego arranca solo. Las próximas veces arranca directo.
   `?setup` vuelve a mostrar la importación. Nada se sube a ningún servidor y la instalación no se modifica.
 - **Publicar en Cloudflare Pages:** `node tools/build-web.mjs` → `npx wrangler pages deploy dist --project-name f1c-cmt-web`.
@@ -62,6 +62,47 @@ En carrera el rendimiento **todavía no alcanza** 40–60 FPS: hace falta ~3× (
   carpeta `dist`, Node 20 y los encabezados COOP/COEP. No hace falta instalar dependencias.
 - **Probar `dist/` en la PC:** `npm run build` y `npm run serve` → http://localhost:8800/
 - **Desarrollo local:** `node tools/dev-server.mjs "<carpeta del juego>" 8150 <carpeta instantáneas>` (`?snap=` para diagnóstico).
+
+## Distribución automática de contenido (R2 / HTTPS autorizado)
+
+El sitio (emulador) y el contenido (archivos de EA/CMT) están separados. Sin origen configurado, el jugador importa su
+propia copia (selector de carpeta → OPFS). **Con un origen autorizado**, el jugador abre el enlace y juega:
+
+1. Se descarga `manifest.json` (rutas, tamaños, SHA-256 y grupo de cada archivo; también se guarda en OPFS por si no hay red).
+2. Se descargan en paralelo **sólo los archivos del grupo `boot` que falten** (≈850 archivos, 195 MB: exe, configuración,
+   menús, autos del menú…), verificando el SHA-256 de cada uno, con progreso real (MB, archivos, MB/s).
+3. Arranca el juego. Todo lo demás (circuitos, autos, sonidos) se baja **cuando el juego lo abre** (XHR síncrono en el
+   worker, verificación SHA-256, aviso "Descargando …" en pantalla) y queda en la caché.
+4. Caché persistente en OPFS (`f1c-net/data.bin` + `index.json`) **indexada por hash**: al volver a entrar no se
+   descarga nada; si cambia el contenido sólo bajan los archivos cuyo hash cambió.
+
+Pruebas realizadas (Chromium, sitio en un origen y contenido en otro con CORS, `tools/net-test.mjs`):
+
+| Corrida | Resultado |
+|---|---|
+| 1, caché vacía | 850 archivos de arranque (195 MB) en ~5 s, todos verificados, y arranque hasta la pantalla legal; el servidor de contenido registró 851 pedidos (manifiesto + 850), ninguno a demanda |
+| 2, manifiesto con todo "a demanda" y caché vacía | 561 archivos (57 MB) bajados uno a uno cuando el juego los abrió; llegó igual a la pantalla legal |
+| 3, misma caché con el manifiesto normal | sólo bajaron los 131 archivos de arranque que faltaban |
+| 4, mismo navegador otra vez | 0 descargas, arranque directo desde OPFS |
+
+### Preparar y publicar el contenido (sólo con autorización de EA/CMT)
+
+```
+node tools/make-content.mjs "C:\ruta\F1 Challenge 2025 CMT" contenido --copy
+#   contenido/manifest.json + contenido/files/<ruta>   (excluye Bink, plugins, zips, instaladores)
+rclone copy contenido r2:MI-BUCKET/f1c          # o: npx wrangler r2 object put … por archivo
+```
+
+- `tools/boot-files.json` define el grupo de arranque; se regenera con `node tools/boot-files.mjs <juego> tools/boot-files.json`
+  (corre el juego en Node desde el inicio hasta el menú y anota qué archivos abre).
+- **R2:** bucket con acceso público (dominio propio o `r2.dev`) y **CORS** para el dominio del sitio:
+  `[{"AllowedOrigins":["https://TU-SITIO.netlify.app"],"AllowedMethods":["GET","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":86400}]`.
+  El sitio usa COEP `require-corp`, así que el contenido debe llegar con CORS (o `Cross-Origin-Resource-Policy: cross-origin`).
+- **Conectar el sitio:** en Netlify (o Cloudflare Pages) definir la variable `CONTENT_BASE=https://TU-BUCKET/f1c/` y
+  volver a desplegar; `tools/build-web.mjs` escribe `config.json` y desde ahí el arranque es automático.
+  Para probar sin redeploy: `https://TU-SITIO/?content=https://TU-BUCKET/f1c/`. Para usar una copia propia: `?import`.
+- Prueba local: `node tools/make-content.mjs <juego> contenido` y `node tools/net-test.mjs contenido <juego>`
+  (sirve los archivos desde tu instalación, sin copiarlos ni publicarlos).
 
 ## Cambios respecto del núcleo de Daytona
 

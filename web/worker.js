@@ -20,12 +20,7 @@ async function fetchBin(url, label) {
 // Origen de los archivos del juego: 'pack' (copia importada en OPFS, el modo de los jugadores), 'remote' (servidor
 // con autorización para distribuir los archivos: lectura síncrona por XHR desde el worker) o 'snap' (diagnóstico).
 async function makeVfs(source) {
-  if (source.kind === 'remote') {
-    const man = await (await fetch(source.base + 'manifest.json')).json();
-    const entries = man.files.map(([path, size]) => ({ path, size }));
-    const read = (e) => { const x = new XMLHttpRequest(); x.open('GET', source.base + e.path.split(/[\\/]/).map(encodeURIComponent).join('/'), false); x.responseType = 'arraybuffer'; x.send(); return x.status === 200 ? new Uint8Array(x.response) : null; };
-    return new GameVFS({ entries, dirs: man.dirs, source: { read } });
-  }
+  if (source.kind === 'net') return netVfs(source);
   const P = await import('./pack.js');
   const idx = await P.readIndex(); if (!idx) throw new Error('No hay archivos importados');
   const src = await P.openPacks(idx);
@@ -34,6 +29,32 @@ async function makeVfs(source) {
   post('log', { text: `[VFS] ${idx.files.length} archivos del juego (${(idx.bytes / 1073741824).toFixed(2)} GB), ${n} archivos guardados por el juego` });
   return vfs;
 }
+// Origen autorizado (R2/HTTPS): manifiesto + caché OPFS por hash; primero el grupo "boot", el resto bajo demanda.
+async function netVfs(source) {
+  const base = source.base.endsWith('/') ? source.base : source.base + '/';
+  const { NetCache } = await import('./netcache.js'); const P = await import('./pack.js');
+  post('status', { text: 'Leyendo el manifiesto de contenido…' });
+  let man; const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('f1c-net', { create: true });
+  try { const r = await fetch(base + 'manifest.json', { cache: 'no-cache' }); if (!r.ok) throw new Error('HTTP ' + r.status); man = await r.json();
+    const w = await (await root.getFileHandle('manifest.json', { create: true })).createWritable(); await w.write(JSON.stringify(man)); await w.close(); }
+  catch (e) { try { man = JSON.parse(await (await (await root.getFileHandle('manifest.json')).getFile()).text()); post('log', { text: `[NET] sin conexión al origen (${e.message}); se usa el manifiesto guardado` }); } catch { throw new Error(`No se pudo leer ${base}manifest.json: ${e.message}`); } }
+  if (man.format !== 'f1c-cmt-web/1') throw new Error('Manifiesto con formato desconocido');
+  const cache = await NetCache.open(base, (ev) => post('net', ev));
+  const entries = man.files.map((f) => ({ path: f.p, size: f.s, h: f.h, g: f.g }));
+  const boot = entries.filter((e) => e.g === 'boot'); const missing = boot.filter((e) => !cache.has(e.h));
+  const have = entries.filter((e) => cache.has(e.h)).reduce((a, e) => a + e.size, 0);
+  post('log', { text: `[NET] contenido ${man.version}: ${entries.length} archivos (${(man.bytes / 1073741824).toFixed(2)} GB); en caché ${(have / 1048576).toFixed(0)} MB; faltan para arrancar ${missing.length} archivos` });
+  if (missing.length) {
+    post('status', { text: 'Descargando los archivos para arrancar…' });
+    await cache.prefetch(missing, (p) => post('prefetch', p));
+  }
+  post('status', { text: 'Arrancando el motor del juego…' });
+  const vfs = new GameVFS({ entries, dirs: man.dirs, source: cache, onWrite: P.saveUserFile, onDelete: P.deleteUserFile });
+  let n = 0; for (const [k, data] of await P.loadUserFiles()) { vfs.files.set(k, { name: k.split('\\').pop(), data, written: true }); const i = k.lastIndexOf('\\'); if (i > 0) vfs.addDir(k.slice(0, i)); n++; }
+  netStats = cache.stats;
+  return vfs;
+}
+let netStats = null;
 async function start({ canvas, snap, opts = {}, source = { kind: 'pack' } }) {
   const host = { deferPresent: true, present() {}, setMode() {}, setTitle: (t) => post('title', { text: t }), messageBox: (c, t) => post('log', { text: `[MSGBOX] ${t}: ${c}` }) };
   if (snap) { await startSnap({ canvas, snap, opts, host }); return; }
@@ -94,7 +115,7 @@ function loop() {
   if (!shown && now - lastBoot > 400) { lastBoot = now; post('boot', { instr: emu.cpu.icount, files: emu.vfs.opened.size }); }
   if (now - lastStat > 1000) { const dt = (now - t0) / 1000; const nf = Math.max(1, gl.stats.frames); const glMs = (gl.stats.drawMs || 0) + (gl.stats.presentMs || 0); gl.stats.drawMs = gl.stats.presentMs = 0;
     let heap = 0; for (const n of emu.mem.blocks.values()) heap += n;
-    post('stats', { heapMB: Math.round(heap / 1048576), glMs: glMs / nf, emuMs: (statWork - glMs) / nf, mips: (emu.cpu.icount - instr0) / dt / 1e6, fps: gl.stats.frames / dt, draws: gl.stats.draws, tex: gl.stats.texUploads, skipped: gl.stats.skipped, files: emu.vfs.opened.size, icount: emu.cpu.icount });
+    post('stats', { net: netStats, heapMB: Math.round(heap / 1048576), glMs: glMs / nf, emuMs: (statWork - glMs) / nf, mips: (emu.cpu.icount - instr0) / dt / 1e6, fps: gl.stats.frames / dt, draws: gl.stats.draws, tex: gl.stats.texUploads, skipped: gl.stats.skipped, files: emu.vfs.opened.size, icount: emu.cpu.icount });
     lastStat = now; t0 = now; instr0 = emu.cpu.icount; gl.stats.frames = 0; statWork = 0; }
   // A mitad de cuadro se sigue enseguida (MessageChannel = 0 ms). Tras un Present: si el cuadro costó menos
   // que un refresco se espera al vsync (no pasar de la frecuencia de la pantalla); si costó más, se sigue ya.
