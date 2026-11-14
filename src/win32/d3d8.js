@@ -79,7 +79,7 @@ function textureMethods() {
     ['SetLOD', 1, () => 0], ['GetLOD', 0, () => 0], ['GetLevelCount', 0, (e2, o) => o.levels],
     ['GetLevelDesc', 2, (e2, o, self, lvl, p) => { const s = o.surfaces[lvl]; if (!s) return D3DERR_INVALIDCALL; writeSurfDesc(e2, p, s); }],
     ['GetSurfaceLevel', 2, (e2, o, self, lvl, pp) => { const s = o.surfaces[lvl]; if (!s) return D3DERR_INVALIDCALL; s.refs++; e2.mem.w32(pp, s.addr); }],
-    ['LockRect', 4, (e2, o, self, lvl, pLocked, pRect, flags) => { const s = o.surfaces[lvl]; if (!s) return D3DERR_INVALIDCALL; e2.mem.w32(pLocked, s.pitch); e2.mem.w32(pLocked + 4, s.mem); s.locks++; e2.d3d.stats.locks++; }],
+    ['LockRect', 4, (e2, o, self, lvl, pLocked, pRect, flags) => { const s = o.surfaces[lvl]; if (!s) return D3DERR_INVALIDCALL; e2.mem.w32(pLocked, s.pitch); e2.mem.w32(pLocked + 4, s.mem + rectOffset(e2, s, pRect)); s.locks++; e2.d3d.stats.locks++; }],
     ['UnlockRect', 1, (e2, o, self, lvl) => { const s = o.surfaces[lvl]; if (s) s.dirty = true; o.dirty = true; e2.d3dBackend?.textureChanged?.(o, lvl); }],
     ['AddDirtyRect', 1, (e2, o) => { o.dirty = true; }],
   ];
@@ -119,6 +119,16 @@ function createDevice(e, pp, flags, hwnd) {
   return makeCom(e, 'IDirect3DDevice8', deviceMethods(), dev);
 }
 const rdF = (e, p, n) => { const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = e.mem.dv.getFloat32(p + 4 * i, true); return f; };
+function rectOffset(e, s, pRect) { if (!pRect) return 0; const x = e.mem.r32(pRect), y = e.mem.r32(pRect + 4); return isDXT(s.fmt) ? (y >> 2) * s.pitch + (x >> 2) * (s.fmt === 0x31545844 ? 8 : 16) : y * s.pitch + x * BPP[s.fmt]; }
+// Copia de memoria entre superficies (CopyRects / UpdateTexture): el contenido vive en la memoria emulada.
+function copySurf(e, src, dst, sx, sy, w, h, dx, dy) {
+  if (!src || !dst || src.fmt !== dst.fmt) return false; const u8 = e.mem.u8;
+  if (isDXT(src.fmt)) { const bs = src.fmt === 0x31545844 ? 8 : 16; sx >>= 2; sy >>= 2; dx >>= 2; dy >>= 2; w = Math.max(1, (w + 3) >> 2); h = Math.max(1, (h + 3) >> 2);
+    for (let r = 0; r < h; r++) u8.copyWithin(dst.mem + (dy + r) * dst.pitch + dx * bs, src.mem + (sy + r) * src.pitch + sx * bs, src.mem + (sy + r) * src.pitch + (sx + w) * bs); }
+  else { const b = BPP[src.fmt]; w = Math.min(w, src.w - sx, dst.w - dx); h = Math.min(h, src.h - sy, dst.h - dy); if (w <= 0 || h <= 0) return true;
+    for (let r = 0; r < h; r++) u8.copyWithin(dst.mem + (dy + r) * dst.pitch + dx * b, src.mem + (sy + r) * src.pitch + sx * b, src.mem + (sy + r) * src.pitch + (sx + w) * b); }
+  dst.dirty = true; if (dst.container) dst.container.dirty = true; return true;
+}
 function draw(e, dev, kind, args) { const S = e.d3d.stats; S.draws++; S.drawsByKind[kind] = (S.drawsByKind[kind] || 0) + 1; return e.d3dBackend?.draw?.(dev, kind, args); }
 export function deviceMethods() {
   const D = (e) => e.d3d.device, S = (e) => e.d3d.stats, B = (e) => e.d3dBackend;
@@ -142,8 +152,13 @@ export function deviceMethods() {
     ['CreateRenderTarget', 6, (e2, o, self, w, h, fmt, ms, lockable, pp) => { const [a] = newSurface(e2, w, h, fmt, 1, 0, 'rt', null); e2.mem.w32(pp, a); }],
     ['CreateDepthStencilSurface', 5, (e2, o, self, w, h, fmt, ms, pp) => { const [a] = newSurface(e2, w, h, fmt, 2, 0, 'depth', null); e2.mem.w32(pp, a); }],
     ['CreateImageSurface', 4, (e2, o, self, w, h, fmt, pp) => { const [a] = newSurface(e2, w, h, fmt, 0, 2, 'image', null); e2.mem.w32(pp, a); }],
-    ['CopyRects', 5, (e2, o, self, src, rects, n, dst, pts) => { S(e2).copyRects++; B(e2)?.copyRects?.(e2.d3d.objs.get(src), rects, n, e2.d3d.objs.get(dst), pts); }],
-    ['UpdateTexture', 2, (e2, o, self, src, dst) => { B(e2)?.updateTexture?.(e2.d3d.objs.get(src), e2.d3d.objs.get(dst)); }],
+    ['CopyRects', 5, (e2, o, self, src, rects, n, dst, pts) => { S(e2).copyRects++; const a = e2.d3d.objs.get(src), b = e2.d3d.objs.get(dst); const m = e2.mem;
+      if (!rects || !n) copySurf(e2, a, b, 0, 0, a.w, a.h, 0, 0);
+      else for (let i = 0; i < n; i++) { const r = rects + 16 * i, x0 = m.r32(r), y0 = m.r32(r + 4), x1 = m.r32(r + 8), y1 = m.r32(r + 12); const px = pts ? m.r32(pts + 8 * i) : x0, py = pts ? m.r32(pts + 8 * i + 4) : y0; copySurf(e2, a, b, x0, y0, x1 - x0, y1 - y0, px, py); }
+      B(e2)?.copyRects?.(a, rects, n, b, pts); }],
+    ['UpdateTexture', 2, (e2, o, self, src, dst) => { const a = e2.d3d.objs.get(src), b = e2.d3d.objs.get(dst); S(e2).updateTexture = (S(e2).updateTexture || 0) + 1;
+      if (a?.surfaces && b?.surfaces) { const off = Math.max(0, a.surfaces.length - b.surfaces.length); b.surfaces.forEach((d, i) => { const sf = a.surfaces[i + off]; if (sf) copySurf(e2, sf, d, 0, 0, sf.w, sf.h, 0, 0); }); b.dirty = true; }
+      B(e2)?.updateTexture?.(a, b); }],
     ['GetFrontBuffer', 1, () => D3D_OK],
     ['SetRenderTarget', 2, (e2, o, self, rt, zs) => { if (rt) o.rt = e2.d3d.objs.get(rt); o.zs = zs ? e2.d3d.objs.get(zs) : null; B(e2)?.setRenderTarget?.(o); }],
     ['GetRenderTarget', 1, (e2, o, self, pp) => { e2.mem.w32(pp, o.rt.addr); o.rt.refs++; }],

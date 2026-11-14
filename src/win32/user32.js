@@ -75,6 +75,19 @@ const U = {
       const hwnd = s.focus || [...s.windows.keys()][0] || 0;
       s.queue.push({ hwnd, msg: down ? WM.KEYDOWN : WM.KEYUP, wParam: vk, lParam: down ? 1 : 0xc0000001 });
     };
+    // API para el host: ratón en coordenadas de la ventana (x, y) y botón (0 izq, 1 der, 2 medio); down: true/false/null (solo mover)
+    emu.mouseEvent = (x, y, button, down) => {
+      const s = st(emu); const m = s.mouse ??= { x: 0, y: 0, b: 0 }; const hwnd = s.focus || [...s.windows.keys()][0] || 0;
+      const dx = x - m.x, dy = y - m.y; m.x = x; m.y = y;
+      if (down != null) m.b = down ? m.b | (1 << button) : m.b & ~(1 << button);
+      const lp = ((y & 0xffff) << 16) | (x & 0xffff), wp = (m.b & 1 ? 1 : 0) | (m.b & 2 ? 2 : 0) | (m.b & 4 ? 0x10 : 0);
+      if (dx || dy) s.queue.push({ hwnd, msg: WM.MOUSEMOVE, wParam: wp, lParam: lp });
+      if (down != null) s.queue.push({ hwnd, msg: [[0x201, 0x202], [0x204, 0x205], [0x207, 0x208]][button][down ? 0 : 1], wParam: wp, lParam: lp });
+      const d = emu.state.diMouse ??= { dx: 0, dy: 0, dz: 0, b: 0, buf: [], seq: 0 };
+      d.dx += dx; d.dy += dy; d.b = m.b; const t = Math.floor(emu.nowMs());
+      if (dx) d.buf.push([0, dx, t]); if (dy) d.buf.push([4, dy, t]); if (down != null) d.buf.push([12 + button, down ? 0x80 : 0, t]);
+      if (d.buf.length > 256) d.buf.splice(0, d.buf.length - 256);
+    };
   },
   CreateDialogParamA: api(5, (emu, instance, name, parent, proc, param) => {
     const id = name < 0x10000 ? name : emu.mem.cstr(name);
@@ -217,7 +230,7 @@ const U = {
   GetKeyboardState: api(1, (emu, p) => { emu.mem.writeBytes(p, st(emu).keys); return 1; }),
   MapVirtualKeyA: api(2, (emu, c) => c),
   SetCapture: api(1, () => 0), ReleaseCapture: api(0, () => 1),
-  GetCursorPos: api(1, (emu, p) => { emu.mem.w32(p, 320); emu.mem.w32(p + 4, 240); return 1; }),
+  GetCursorPos: api(1, (emu, p) => { const m = st(emu).mouse || { x: 400, y: 300 }; emu.mem.w32(p, m.x); emu.mem.w32(p + 4, m.y); return 1; }),
   SetCursorPos: api(2, () => 1),
   ShowCursor: api(1, (emu, show) => { const s = st(emu); s.cursorShown += show ? 1 : -1; return s.cursorShown; }),
   SetCursor: api(1, () => 0), LoadCursorA: api(2, () => 0x7f00), LoadIconA: api(2, () => 0x7f01),

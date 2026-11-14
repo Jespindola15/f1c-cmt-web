@@ -21,8 +21,14 @@ function devMethods() {
     ['Acquire', 0, (e2, o) => { o.acquired = true; }], ['Unacquire', 0, (e2, o) => { o.acquired = false; }],
     ['GetDeviceState', 2, (e2, o, s, size, p) => { e2.mem.fill(p, 0, size);
       if (o.kind === 'keyboard' && e2.keys) for (let i = 0; i < Math.min(256, size); i++) if (e2.keys[i]) e2.mem.w8(p + i, 0x80);
+      if (o.kind === 'mouse') { const d = e2.state.diMouse; if (d) { e2.mem.w32(p, d.dx | 0); e2.mem.w32(p + 4, d.dy | 0); e2.mem.w32(p + 8, d.dz | 0); d.dx = d.dy = d.dz = 0;
+        for (let i = 0; i < Math.min(8, size - 12); i++) if (d.b & (1 << i)) e2.mem.w8(p + 12 + i, 0x80); } }
       if (o.kind === 'joystick' && e2.joyState) e2.joyState(o, p, size); }],
-    ['GetDeviceData', 4, (e2, o, s, cb, p, pn) => { e2.mem.w32(pn, 0); }],
+    // Datos con búfer (DIDEVICEOBJECTDATA: ofs, data, time, seq[, appData]); flags & 1 = DIGDD_PEEK
+    ['GetDeviceData', 4, (e2, o, s, cb, p, pn, fl) => { const q = o.kind === 'mouse' ? e2.state.diMouse?.buf : o.kind === 'keyboard' ? (e2.state.diKeys ??= []) : null;
+      const cap = e2.mem.r32(pn); if (!q) { e2.mem.w32(pn, 0); return; } const n = p ? Math.min(cap, q.length) : (cap === 0xffffffff ? q.length : Math.min(cap, q.length));
+      if (p) for (let i = 0; i < n; i++) { const [ofs, data, t] = q[i]; const a = p + i * cb; e2.mem.w32(a, ofs); e2.mem.w32(a + 4, data); e2.mem.w32(a + 8, t); e2.mem.w32(a + 12, (o.seq = (o.seq || 0) + 1)); if (cb >= 20) e2.mem.w32(a + 16, 0); }
+      if (!(fl & 1)) q.splice(0, n); e2.mem.w32(pn, n); }],
     ['SetDataFormat', 1, (e2, o, s, p) => { o.fmtSize = e2.mem.r32(p + 12); }], ['SetEventNotification', 1, () => DI_OK], ['SetCooperativeLevel', 2, () => DI_OK],
     ['GetObjectInfo', 3, () => DIERR_NOTFOUND], ['GetDeviceInfo', 1, (e2, o, s, p) => { const sz = e2.mem.r32(p); e2.mem.fill(p + 4, 0, sz - 4); e2.mem.writeCStr(p + 52, o.kind, 260); }],
     ['RunControlPanel', 2, () => DI_OK], ['Initialize', 3, () => DI_OK], ['CreateEffect', 4, () => DIERR_UNSUPPORTED], ['EnumEffects', 3, () => DI_OK],
